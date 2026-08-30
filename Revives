@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Revive Payment Tracker (Faction Shared)
 // @namespace    https://torn.com/
-// @version      2.1.4
+// @version      2.1.5
 // @description  Track revive payments globally across your faction using Google Sheets backend.
 // @author       You
 // @match        https://www.torn.com/*
@@ -292,9 +292,21 @@
     function injectReputationBadges() {
         if (!Array.isArray(sharedRevivesCache) || sharedRevivesCache.length === 0) return;
 
-        const profileLinks = document.querySelectorAll('a[href*="XID="]:not([data-trpt]), a[href*="profiles.php?XID="]:not([data-trpt])');
+        // TARGET SPECIFIC LINK CONTAINERS ONLY (Excludes sidebars, chat boxes, and user headers)
+        const selectors = [
+            '#mainContainer a[href*="profiles.php?XID="]:not([data-trpt])',
+            '.user-info-value a[href*="XID="]:not([data-trpt])',
+            '.hospital-list a[href*="XID="]:not([data-trpt])',
+            '.members-list a[href*="XID="]:not([data-trpt])',
+            '.user-name[href*="XID="]:not([data-trpt])'
+        ];
+
+        const profileLinks = document.querySelectorAll(selectors.join(', '));
 
         profileLinks.forEach(link => {
+            // Ignore links inside chat, sidebars, or sub-navigation menus
+            if (link.closest('#sidebarroot, #chatRoot, .user-menu, .header-root, .nav-group')) return;
+
             link.setAttribute('data-trpt', 'true');
             const href = link.getAttribute('href') || '';
             const match = href.match(/XID=(\d+)/i);
