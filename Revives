@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Revive Payment Tracker (Faction Shared)
 // @namespace    https://torn.com/
-// @version      2.2.1
+// @version      2.2.2
 // @description  Track revive payments globally across your faction using Google Sheets backend.
 // @author       You
 // @match        https://www.torn.com/*
@@ -18,15 +18,12 @@
 (function () {
     'use strict';
 
-    // -------------------------------------------------------------
-    // PASTE YOUR GOOGLE WEB APP URL BETWEEN THE QUOTES BELOW:
     const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwrGdxSIxZupwZddypRhLTVYinjsRZ9ALT1FP5ad4ILLKfj-HsObFkWJZ1ch2Ydd5SR/exec";
-    // -------------------------------------------------------------
 
     const STORAGE_KEY_APIKEY = 'trpt_api_key';
     const STORAGE_KEY_USERNAME = 'trpt_username';
     let sharedRevivesCache = [];
-    let lastLogTime = 0; // Debounce tracking variable (5s lockout)
+    let lastLogTime = 0;
 
     function getApiKey() {
         return GM_getValue(STORAGE_KEY_APIKEY, '');
@@ -44,24 +41,6 @@
         return name || 'Unknown';
     }
 
-    // --- FETCH USER DETAILS FROM API ---
-    function fetchUserDetails(apiKey) {
-        GM_xmlhttpRequest({
-            method: 'GET',
-            url: `https://api.torn.com/user/?selections=profile&key=${apiKey}`,
-            onload: function (response) {
-                try {
-                    const data = JSON.parse(response.responseText);
-                    if (data.name) {
-                        GM_setValue(STORAGE_KEY_USERNAME, data.name);
-                    }
-                } catch (e) {
-                    console.error('TRPT Profile Fetch Error:', e);
-                }
-            }
-        });
-    }
-
     // --- FETCH GLOBAL DATA FROM GOOGLE SHEETS ---
     function syncGlobalData(callback) {
         if (!GOOGLE_SCRIPT_URL || GOOGLE_SCRIPT_URL.includes("YOUR_GOOGLE_WEB_APP_URL")) return;
@@ -74,313 +53,71 @@
                     const data = JSON.parse(response.responseText);
                     if (Array.isArray(data)) {
                         sharedRevivesCache = data;
-                        // Trigger soft update of badges without destroying non-changed elements
+                        console.log('[TRPT] Synced cache from Google Sheets:', sharedRevivesCache.length, 'records');
                         injectReputationBadges();
                         if (typeof callback === 'function') callback();
                     }
                 } catch (e) {
-                    console.error('TRPT Sync Error:', e);
+                    console.error('[TRPT] Sync Error Parsing Response:', e, response.responseText);
                 }
+            },
+            onerror: function(err) {
+                console.error('[TRPT] Fetch Error from Google Script:', err);
             }
         });
     }
 
     syncGlobalData();
-    setInterval(syncGlobalData, 60000);
+    setInterval(syncGlobalData, 30000); // Sync every 30s
 
-    // --- SEND NEW REVIVE TO GOOGLE SHEETS ---
-    function sendReviveToSheet(reviveData) {
-        if (!GOOGLE_SCRIPT_URL || GOOGLE_SCRIPT_URL.includes("YOUR_GOOGLE_WEB_APP_URL")) return;
-
-        GM_xmlhttpRequest({
-            method: 'POST',
-            url: GOOGLE_SCRIPT_URL,
-            headers: { "Content-Type": "text/plain;charset=utf-8" },
-            data: JSON.stringify({
-                action: 'add_revive',
-                timestamp: reviveData.timestamp,
-                targetId: String(reviveData.targetId),
-                targetName: reviveData.targetName,
-                reviverName: getReviverName()
-            }),
-            onload: function(res) {
-                console.log('TRPT Revive Logged:', res.responseText);
-                setTimeout(() => {
-                    syncGlobalData(() => {
-                        runCheckPayments();
-                    });
-                }, 1500);
-            }
-        });
-    }
-
-    // --- UPDATE PAYMENT IN GOOGLE SHEETS ---
-    function sendPaymentToSheet(targetId, timestamp, paymentType) {
-        if (!GOOGLE_SCRIPT_URL || GOOGLE_SCRIPT_URL.includes("YOUR_GOOGLE_WEB_APP_URL")) return;
-
-        GM_xmlhttpRequest({
-            method: 'POST',
-            url: GOOGLE_SCRIPT_URL,
-            headers: { "Content-Type": "text/plain;charset=utf-8" },
-            data: JSON.stringify({
-                action: 'update_payment',
-                targetId: String(targetId),
-                timestamp: Number(timestamp),
-                paymentType: paymentType
-            }),
-            onload: function(res) {
-                console.log('TRPT Payment Status:', res.responseText);
-                setTimeout(syncGlobalData, 1500);
-            }
-        });
-    }
-
-    // --- RECURRING PAYMENT VERIFICATION ---
-    function runCheckPayments() {
-        const apiKey = getApiKey();
-        console.log('[TRPT] Checking payments... API Key present:', !!apiKey, '| Cached Revives:', sharedRevivesCache.length);
-
-        if (!apiKey) {
-            console.warn('[TRPT] Payment check skipped: Missing API Key.');
-            return;
-        }
-        if (sharedRevivesCache.length === 0) {
-            console.warn('[TRPT] Payment check skipped: No revive cache loaded from Google Sheets yet.');
-            return;
-        }
-
-        const pending = sharedRevivesCache.filter(r => !r.paid && (Date.now() - r.timestamp < 48 * 60 * 60 * 1000));
-        console.log('[TRPT] Unpaid revives pending payment check:', pending.length, pending);
-
-        if (pending.length === 0) return;
-
-        GM_xmlhttpRequest({
-            method: 'GET',
-            url: `https://api.torn.com/user/?selections=events&key=${apiKey}`,
-            onload: function (response) {
-                try {
-                    const data = JSON.parse(response.responseText);
-                    if (data.error) {
-                        console.error('[TRPT] Torn API Error:', data.error);
-                        return;
-                    }
-                    if (!data.events) return;
-
-                    Object.values(data.events).forEach(ev => {
-                        const eventText = ev.event || '';
-                        const eventTime = ev.timestamp * 1000;
-
-                        pending.forEach(revive => {
-                            if (eventTime >= (revive.timestamp - 300000)) {
-                                const cleanText = eventText.replace(/<[^>]*>?/gm, '');
-                                const idMatch = eventText.includes(`ID=${revive.targetId}`) || cleanText.includes(`XID=${revive.targetId}`) || cleanText.includes(revive.targetId);
-                                const nameMatch = revive.targetName && revive.targetName !== 'Unknown' && cleanText.toLowerCase().includes(revive.targetName.toLowerCase());
-
-                                const isMoney = cleanText.includes('sent you $') || cleanText.includes('transferred $');
-                                const isXanax = cleanText.toLowerCase().includes('xanax');
-
-                                if ((idMatch || nameMatch) && (isMoney || isXanax)) {
-                                    console.log('[TRPT] Match found! Sending payment update to sheet for TargetID:', revive.targetId);
-                                    revive.paid = true;
-                                    sendPaymentToSheet(revive.targetId, revive.timestamp, isXanax ? 'Xanax' : 'Cash');
-                                }
-                            }
-                        });
-                    });
-                } catch (e) {
-                    console.error('[TRPT] Payment Verification Error:', e);
-                }
-            }
-        });
-    }
-
-    if (typeof unsafeWindow !== 'undefined') {
-        unsafeWindow.checkPayments = runCheckPayments;
-    } else {
-        window.checkPayments = runCheckPayments;
-    }
-
-    setInterval(runCheckPayments, 3 * 60 * 1000);
-
-    // --- ENHANCED TARGET NAME EXTRACTION ---
-    function extractTargetName(btn, targetId) {
-        let foundName = '';
-
-        const row = btn.closest('li, tr, div[class*="user"], div[class*="row"], div[class*="profile"]');
-        if (row) {
-            const nameEl = row.querySelector('.user-name, .name, a[href*="XID="], div[class*="name"]');
-            if (nameEl) {
-                foundName = nameEl.textContent.replace(/\[\d+\]/g, '').trim();
-            }
-        }
-
-        if (!foundName) {
-            const mini = document.querySelector('#mini-profile, .mini-profile-wrapper');
-            if (mini) {
-                const miniName = mini.querySelector('.name, .user-name');
-                if (miniName) foundName = miniName.textContent.replace(/\[\d+\]/g, '').trim();
-            }
-        }
-
-        if (!foundName) {
-            const profileHeader = document.querySelector('.profile-header .name, .profile-container .user-name');
-            if (profileHeader) {
-                foundName = profileHeader.textContent.replace(/\[\d+\]/g, '').trim();
-            }
-        }
-
-        if (!foundName && window.location.href.includes('profiles.php')) {
-            const titleMatch = document.title.match(/Torn\s*-\s*([^\[]+)/i);
-            if (titleMatch) foundName = titleMatch[1].trim();
-        }
-
-        if (foundName) {
-            foundName = foundName.replace(/^[\s\n\r]+|[\s\n\r]+$/g, '').split('[')[0].trim();
-        }
-
-        return foundName || 'Unknown';
-    }
-
-    // --- STRICT MOBILE TOUCH & CLICK DETECTOR WITH 5s DEBOUNCE ---
-    let touchStartY = 0;
-
-    document.addEventListener('touchstart', (e) => {
-        if (e.touches && e.touches.length > 0) {
-            touchStartY = e.touches[0].clientY;
-        }
-    }, { passive: true });
-
-    function handleReviveTrigger(e) {
-        if (Date.now() - lastLogTime < 5000) return;
-
-        if (e.type === 'touchend' && e.changedTouches && e.changedTouches.length > 0) {
-            const touchEndY = e.changedTouches[0].clientY;
-            if (Math.abs(touchEndY - touchStartY) > 10) return;
-        }
-
-        const btn = e.target.closest('a[href*="action=revive"], button[aria-label*="Revive"], .revive, a[data-action="revive"]');
-        if (!btn) return;
-
-        const btnText = (btn.textContent || btn.getAttribute('aria-label') || btn.title || '').toLowerCase();
-        const isExplicitRevive = btnText.includes('revive') || (btn.href && btn.href.includes('action=revive'));
-        if (!isExplicitRevive) return;
-
-        if (btn.classList.contains('disabled') || btn.querySelector('.off') || btn.getAttribute('aria-disabled') === 'true') {
-            return;
-        }
-
-        let targetId = null;
-
-        if (btn.href) {
-            const hrefMatch = btn.href.match(/XID=(\d+)/i) || btn.href.match(/ID=(\d+)/i);
-            if (hrefMatch) targetId = hrefMatch[1];
-        }
-
-        if (!targetId) {
-            const urlMatch = window.location.href.match(/XID=(\d+)/i);
-            if (urlMatch) targetId = urlMatch[1];
-        }
-
-        if (!targetId) {
-            const row = btn.closest('li, tr, div[class*="user"], div[class*="row"]');
-            if (row) {
-                const link = row.querySelector('a[href*="XID="]');
-                if (link) {
-                    const m = link.getAttribute('href').match(/XID=(\d+)/i);
-                    if (m) targetId = m[1];
-                }
-            }
-        }
-
-        if (targetId) {
-            lastLogTime = Date.now();
-            const targetName = extractTargetName(btn, targetId);
-            
-            console.log(`[TRPT] Revive button clicked for Target: ${targetName} [${targetId}]`);
-            
-            setTimeout(() => {
-                const newRevive = {
-                    timestamp: Date.now(),
-                    targetId: targetId,
-                    targetName: targetName
-                };
-                sendReviveToSheet(newRevive);
-            }, 500);
-        }
-    }
-
-    document.addEventListener('click', handleReviveTrigger);
-    document.addEventListener('touchend', handleReviveTrigger);
-
-    // --- UI INJECTIONS ---
-    function injectMobileSettings() {
-        const currentKey = getApiKey();
-        const btn = document.getElementById('trpt-settings-btn');
-
-        if (currentKey) {
-            if (btn) btn.remove();
-            return;
-        }
-
-        if (!btn) {
-            const newBtn = document.createElement('button');
-            newBtn.id = 'trpt-settings-btn';
-            newBtn.textContent = '⚙️ Set Revive API Key';
-            newBtn.style.cssText = 'position:fixed; bottom:15px; right:15px; z-index:999999; background:#28a745; color:#fff; border:none; padding:8px 12px; border-radius:5px; font-size:11px; font-weight:bold; box-shadow:0 2px 5px rgba(0,0,0,0.5);';
-
-            newBtn.onclick = function () {
-                const input = window.prompt('Enter your Limited Access API Key:');
-                if (input && input.trim() !== '') {
-                    const key = input.trim();
-                    GM_setValue(STORAGE_KEY_APIKEY, key);
-                    fetchUserDetails(key);
-                    alert('API Key Saved!');
-                    newBtn.remove();
-                    runCheckPayments();
-                }
-            };
-
-            document.body.appendChild(newBtn);
-        }
-    }
-
+    // --- UI INJECTIONS & BADGE CREATION ---
     function createBadgeElement(isPaid) {
         const badge = document.createElement('span');
         badge.className = 'trpt-badge';
         badge.style.cssText = `
             font-size: 10px;
-            padding: 1px 4px;
-            margin-left: 5px;
+            padding: 2px 5px;
+            margin-left: 6px;
             border-radius: 3px;
             font-weight: bold;
-            color: #fff;
+            color: #ffffff;
             display: inline-block;
             vertical-align: middle;
+            line-height: 1.2;
             background-color: ${isPaid ? '#28a745' : '#dc3545'};
+            box-shadow: 0 1px 2px rgba(0,0,0,0.3);
         `;
-        badge.textContent = isPaid ? 'PAID (1/1)' : 'UNPAID (0/1)';
+        badge.textContent = isPaid ? 'PAID' : 'UNPAID';
         return badge;
+    }
+
+    function isRevivePaid(revive) {
+        if (!revive) return false;
+        if (typeof revive.paid === 'boolean') return revive.paid;
+        if (typeof revive.paid === 'string') {
+            const p = revive.paid.toUpperCase();
+            return p === 'TRUE' || p.includes('TRUE') || p.includes('PAID');
+        }
+        return false;
     }
 
     function applyBadgeToElement(targetContainer, targetId) {
         if (!targetContainer) return;
-        
+
         const existingBadge = targetContainer.querySelector('.trpt-badge');
-        const history = sharedRevivesCache.filter(r => String(r.targetId) === targetId);
+        const history = sharedRevivesCache.filter(r => String(r.targetId) === String(targetId));
 
         if (history.length > 0) {
             const latestRevive = history[history.length - 1];
-            const isPaid = latestRevive.paid === true || String(latestRevive.paid).toUpperCase() === "TRUE";
-            const expectedText = isPaid ? 'PAID (1/1)' : 'UNPAID (0/1)';
+            const isPaid = isRevivePaid(latestRevive);
+            const expectedText = isPaid ? 'PAID' : 'UNPAID';
 
             if (existingBadge) {
-                // UPDATE EXISTING BADGE ONLY IF STATUS CHANGED TO PREVENT FLICKER
                 if (existingBadge.textContent !== expectedText) {
                     existingBadge.textContent = expectedText;
                     existingBadge.style.backgroundColor = isPaid ? '#28a745' : '#dc3545';
                 }
             } else {
-                // ATTACH NEW BADGE ONCE
                 targetContainer.appendChild(createBadgeElement(isPaid));
             }
         }
@@ -389,32 +126,8 @@
     function injectReputationBadges() {
         if (!Array.isArray(sharedRevivesCache) || sharedRevivesCache.length === 0) return;
 
-        // 1. STANDARD USER LISTS & LINKS
-        const selectors = [
-            '#mainContainer a[href*="profiles.php?XID="]:not([data-trpt])',
-            '.user-info-value a[href*="XID="]:not([data-trpt])',
-            '.hospital-list a[href*="XID="]:not([data-trpt])',
-            '.members-list a[href*="XID="]:not([data-trpt])',
-            '.user-name[href*="XID="]:not([data-trpt])'
-        ];
-
-        const profileLinks = document.querySelectorAll(selectors.join(', '));
-        profileLinks.forEach(link => {
-            if (link.closest('#sidebarroot, #chatRoot, .user-menu, .header-root, .nav-group')) return;
-
-            link.setAttribute('data-trpt', 'true');
-            const href = link.getAttribute('href') || '';
-            const match = href.match(/XID=(\d+)/i);
-            if (!match) return;
-
-            const targetId = String(match[1]);
-            if (!link.parentNode.querySelector('.trpt-badge')) {
-                applyBadgeToElement(link.parentNode, targetId);
-            }
-        });
-
-        // 2. MAIN PROFILE HEADER
-        const profileHeaderName = document.querySelector('.profile-header .name, .profile-container .user-name');
+        // 1. MAIN PROFILE HEADER
+        const profileHeaderName = document.querySelector('.profile-header .name, .profile-container .user-name, div[class*="profileHeader"] div[class*="name"]');
         if (profileHeaderName) {
             const urlMatch = window.location.href.match(/XID=(\d+)/i);
             if (urlMatch) {
@@ -422,12 +135,11 @@
             }
         }
 
-        // 3. MINI PROFILE POPUP
+        // 2. MINI PROFILE POPUP
         const miniProfile = document.querySelector('#mini-profile, .mini-profile-wrapper');
         if (miniProfile) {
             const miniLink = miniProfile.querySelector('a[href*="XID="]');
             const miniName = miniProfile.querySelector('.name, .user-name, [class*="name"]');
-
             if (miniLink && miniName) {
                 const href = miniLink.getAttribute('href') || '';
                 const match = href.match(/XID=(\d+)/i);
@@ -436,14 +148,30 @@
                 }
             }
         }
+
+        // 3. MEMBER LISTS & USER LINKS
+        const profileLinks = document.querySelectorAll('#mainContainer a[href*="profiles.php?XID="], .hospital-list a[href*="XID="], .members-list a[href*="XID="]');
+        profileLinks.forEach(link => {
+            if (link.closest('#sidebarroot, #chatRoot, .user-menu, .header-root, .nav-group')) return;
+
+            const href = link.getAttribute('href') || '';
+            const match = href.match(/XID=(\d+)/i);
+            if (!match) return;
+
+            const targetId = String(match[1]);
+            applyBadgeToElement(link.parentNode, targetId);
+        });
     }
 
-    if (getApiKey() && !GM_getValue(STORAGE_KEY_USERNAME, '')) {
-        fetchUserDetails(getApiKey());
-    }
+    // --- QUICK DEBUG CHECK ---
+    // Type window.trptDebug() in F12 console to see cached revives
+    window.trptDebug = function() {
+        console.log('API Key:', getApiKey());
+        console.log('Cache Length:', sharedRevivesCache.length);
+        console.log('Cache Data:', sharedRevivesCache);
+    };
 
     setInterval(() => {
-        injectMobileSettings();
         injectReputationBadges();
     }, 1500);
 
