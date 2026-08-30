@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Revive Payment Tracker (Faction Shared)
 // @namespace    https://torn.com/
-// @version      2.1.1
+// @version      2.1.2
 // @description  Track revive payments globally across your faction using Google Sheets backend.
 // @author       You
 // @match        https://www.torn.com/*
@@ -73,6 +73,9 @@
                     const data = JSON.parse(response.responseText);
                     if (Array.isArray(data)) {
                         sharedRevivesCache = data;
+                        // Clear previous badges so they re-render with fresh data
+                        document.querySelectorAll('[data-trpt]').forEach(el => el.removeAttribute('data-trpt'));
+                        document.querySelectorAll('.trpt-badge').forEach(el => el.remove());
                     }
                 } catch (e) {
                     console.error('TRPT Sync Error:', e);
@@ -82,7 +85,7 @@
     }
 
     syncGlobalData();
-    setInterval(syncGlobalData, 3600000);
+    setInterval(syncGlobalData, 60000); // Sync every 60 seconds
 
     // --- SEND NEW REVIVE TO GOOGLE SHEETS ---
     function sendReviveToSheet(reviveData) {
@@ -101,6 +104,7 @@
             }),
             onload: function(res) {
                 console.log('TRPT Revive Logged:', res.responseText);
+                setTimeout(syncGlobalData, 1500);
             }
         });
     }
@@ -121,7 +125,7 @@
             }),
             onload: function(res) {
                 console.log('TRPT Payment Status:', res.responseText);
-                setTimeout(syncGlobalData, 1000);
+                setTimeout(syncGlobalData, 1500);
             }
         });
     }
@@ -259,31 +263,36 @@
     }
 
     function injectReputationBadges() {
-        if (sharedRevivesCache.length === 0) return;
+        if (!Array.isArray(sharedRevivesCache) || sharedRevivesCache.length === 0) return;
 
-        const profileLinks = document.querySelectorAll('a[href*="profiles.php?XID="]:not([data-trpt])');
+        // Expanded selector to catch player profiles, hospital list, faction profiles, etc.
+        const profileLinks = document.querySelectorAll('a[href*="XID="]:not([data-trpt]), a[href*="profiles.php?XID="]:not([data-trpt])');
 
         profileLinks.forEach(link => {
             link.setAttribute('data-trpt', 'true');
-            const match = link.getAttribute('href').match(/XID=(\d+)/i);
+            const href = link.getAttribute('href') || '';
+            const match = href.match(/XID=(\d+)/i);
             if (!match) return;
 
-            const targetId = match[1];
-            const history = sharedRevivesCache.filter(r => String(r.targetId) === String(targetId));
+            const targetId = String(match[1]);
+            const history = sharedRevivesCache.filter(r => String(r.targetId) === targetId);
 
             if (history.length > 0) {
-                const paidCount = history.filter(r => r.paid).length;
+                // Ensure boolean check handles both true and "TRUE" string values from Sheets
+                const paidCount = history.filter(r => r.paid === true || String(r.paid).toUpperCase() === "TRUE").length;
                 const percentage = Math.round((paidCount / history.length) * 100);
 
                 const badge = document.createElement('span');
+                badge.className = 'trpt-badge';
                 badge.style.cssText = `
-                    font-size: 9px;
-                    padding: 1px 3px;
-                    margin-left: 3px;
-                    border-radius: 2px;
+                    font-size: 10px;
+                    padding: 1px 4px;
+                    margin-left: 4px;
+                    border-radius: 3px;
                     font-weight: bold;
                     color: #fff;
                     display: inline-block;
+                    vertical-align: middle;
                     background-color: ${percentage >= 75 ? '#28a745' : percentage >= 40 ? '#ffc107' : '#dc3545'};
                 `;
                 badge.textContent = `${percentage}% (${paidCount}/${history.length})`;
@@ -300,6 +309,6 @@
     setInterval(() => {
         injectMobileSettings();
         injectReputationBadges();
-    }, 2000);
+    }, 1500);
 
 })();
