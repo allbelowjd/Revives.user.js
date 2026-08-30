@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Revive Payment Tracker (Faction Shared)
 // @namespace    https://torn.com/
-// @version      2.2.0
+// @version      2.2.1
 // @description  Track revive payments globally across your faction using Google Sheets backend.
 // @author       You
 // @match        https://www.torn.com/*
@@ -74,8 +74,8 @@
                     const data = JSON.parse(response.responseText);
                     if (Array.isArray(data)) {
                         sharedRevivesCache = data;
-                        document.querySelectorAll('[data-trpt]').forEach(el => el.removeAttribute('data-trpt'));
-                        document.querySelectorAll('.trpt-badge').forEach(el => el.remove());
+                        // Trigger soft update of badges without destroying non-changed elements
+                        injectReputationBadges();
                         if (typeof callback === 'function') callback();
                     }
                 } catch (e) {
@@ -206,7 +206,6 @@
     function extractTargetName(btn, targetId) {
         let foundName = '';
 
-        // 1. Search inside the same parent container/row (Hospital list, faction list, profile blocks)
         const row = btn.closest('li, tr, div[class*="user"], div[class*="row"], div[class*="profile"]');
         if (row) {
             const nameEl = row.querySelector('.user-name, .name, a[href*="XID="], div[class*="name"]');
@@ -215,7 +214,6 @@
             }
         }
 
-        // 2. Search Mini Profile if active
         if (!foundName) {
             const mini = document.querySelector('#mini-profile, .mini-profile-wrapper');
             if (mini) {
@@ -224,7 +222,6 @@
             }
         }
 
-        // 3. Search Main Profile Header if revived directly on profile page
         if (!foundName) {
             const profileHeader = document.querySelector('.profile-header .name, .profile-container .user-name');
             if (profileHeader) {
@@ -232,13 +229,11 @@
             }
         }
 
-        // 4. Extract from Document Title if on profiles.php (e.g. "Torn - PlayerName [12345]")
         if (!foundName && window.location.href.includes('profiles.php')) {
             const titleMatch = document.title.match(/Torn\s*-\s*([^\[]+)/i);
             if (titleMatch) foundName = titleMatch[1].trim();
         }
 
-        // Clean up common artifacts (brackets, level indicators)
         if (foundName) {
             foundName = foundName.replace(/^[\s\n\r]+|[\s\n\r]+$/g, '').split('[')[0].trim();
         }
@@ -367,6 +362,30 @@
         return badge;
     }
 
+    function applyBadgeToElement(targetContainer, targetId) {
+        if (!targetContainer) return;
+        
+        const existingBadge = targetContainer.querySelector('.trpt-badge');
+        const history = sharedRevivesCache.filter(r => String(r.targetId) === targetId);
+
+        if (history.length > 0) {
+            const latestRevive = history[history.length - 1];
+            const isPaid = latestRevive.paid === true || String(latestRevive.paid).toUpperCase() === "TRUE";
+            const expectedText = isPaid ? 'PAID (1/1)' : 'UNPAID (0/1)';
+
+            if (existingBadge) {
+                // UPDATE EXISTING BADGE ONLY IF STATUS CHANGED TO PREVENT FLICKER
+                if (existingBadge.textContent !== expectedText) {
+                    existingBadge.textContent = expectedText;
+                    existingBadge.style.backgroundColor = isPaid ? '#28a745' : '#dc3545';
+                }
+            } else {
+                // ATTACH NEW BADGE ONCE
+                targetContainer.appendChild(createBadgeElement(isPaid));
+            }
+        }
+    }
+
     function injectReputationBadges() {
         if (!Array.isArray(sharedRevivesCache) || sharedRevivesCache.length === 0) return;
 
@@ -389,35 +408,23 @@
             if (!match) return;
 
             const targetId = String(match[1]);
-            const history = sharedRevivesCache.filter(r => String(r.targetId) === targetId);
-
-            if (history.length > 0) {
-                const latestRevive = history[history.length - 1];
-                const isPaid = latestRevive.paid === true || String(latestRevive.paid).toUpperCase() === "TRUE";
-                link.parentNode.insertBefore(createBadgeElement(isPaid), link.nextSibling);
+            if (!link.parentNode.querySelector('.trpt-badge')) {
+                applyBadgeToElement(link.parentNode, targetId);
             }
         });
 
         // 2. MAIN PROFILE HEADER
-        const profileHeaderName = document.querySelector('.profile-header .name:not([data-trpt]), .profile-container .user-name:not([data-trpt])');
+        const profileHeaderName = document.querySelector('.profile-header .name, .profile-container .user-name');
         if (profileHeaderName) {
-            profileHeaderName.setAttribute('data-trpt', 'true');
             const urlMatch = window.location.href.match(/XID=(\d+)/i);
             if (urlMatch) {
-                const targetId = String(urlMatch[1]);
-                const history = sharedRevivesCache.filter(r => String(r.targetId) === targetId);
-                if (history.length > 0) {
-                    const latestRevive = history[history.length - 1];
-                    const isPaid = latestRevive.paid === true || String(latestRevive.paid).toUpperCase() === "TRUE";
-                    profileHeaderName.appendChild(createBadgeElement(isPaid));
-                }
+                applyBadgeToElement(profileHeaderName, String(urlMatch[1]));
             }
         }
 
         // 3. MINI PROFILE POPUP
-        const miniProfile = document.querySelector('#mini-profile:not([data-trpt]), .mini-profile-wrapper:not([data-trpt])');
+        const miniProfile = document.querySelector('#mini-profile, .mini-profile-wrapper');
         if (miniProfile) {
-            miniProfile.setAttribute('data-trpt', 'true');
             const miniLink = miniProfile.querySelector('a[href*="XID="]');
             const miniName = miniProfile.querySelector('.name, .user-name, [class*="name"]');
 
@@ -425,13 +432,7 @@
                 const href = miniLink.getAttribute('href') || '';
                 const match = href.match(/XID=(\d+)/i);
                 if (match) {
-                    const targetId = String(match[1]);
-                    const history = sharedRevivesCache.filter(r => String(r.targetId) === targetId);
-                    if (history.length > 0) {
-                        const latestRevive = history[history.length - 1];
-                        const isPaid = latestRevive.paid === true || String(latestRevive.paid).toUpperCase() === "TRUE";
-                        miniName.appendChild(createBadgeElement(isPaid));
-                    }
+                    applyBadgeToElement(miniName, String(match[1]));
                 }
             }
         }
