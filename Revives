@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Revive Payment Tracker (Faction Shared)
 // @namespace    https://torn.com/
-// @version      2.1.6
+// @version      2.1.9
 // @description  Track revive payments globally across your faction using Google Sheets backend.
 // @author       You
 // @match        https://www.torn.com/*
@@ -26,6 +26,7 @@
     const STORAGE_KEY_APIKEY = 'trpt_api_key';
     const STORAGE_KEY_USERNAME = 'trpt_username';
     let sharedRevivesCache = [];
+    let lastLogTime = 0; // Debounce tracking variable (5s lockout)
 
     function getApiKey() {
         return GM_getValue(STORAGE_KEY_APIKEY, '');
@@ -193,7 +194,6 @@
         });
     }
 
-    // Bind function to window so DevTools can call it directly
     if (typeof unsafeWindow !== 'undefined') {
         unsafeWindow.checkPayments = runCheckPayments;
     } else {
@@ -202,7 +202,7 @@
 
     setInterval(runCheckPayments, 3 * 60 * 1000);
 
-    // --- STRICT MOBILE TOUCH & CLICK DETECTOR ---
+    // --- STRICT MOBILE TOUCH & CLICK DETECTOR WITH 5s DEBOUNCE ---
     let touchStartY = 0;
 
     document.addEventListener('touchstart', (e) => {
@@ -212,21 +212,20 @@
     }, { passive: true });
 
     function handleReviveTrigger(e) {
+        if (Date.now() - lastLogTime < 5000) return;
+
         if (e.type === 'touchend' && e.changedTouches && e.changedTouches.length > 0) {
             const touchEndY = e.changedTouches[0].clientY;
-            if (Math.abs(touchEndY - touchStartY) > 10) return; // Ignore drag/scroll swipes
+            if (Math.abs(touchEndY - touchStartY) > 10) return;
         }
 
-        // FIND STRICT REVIVE BUTTON ONLY
         const btn = e.target.closest('a[href*="action=revive"], button[aria-label*="Revive"], .revive, a[data-action="revive"]');
         if (!btn) return;
 
-        // VERIFY BUTTON TEXT OR TITLE DIRECTLY TO PREVENT ACCIDENTAL CLICKS
         const btnText = (btn.textContent || btn.getAttribute('aria-label') || btn.title || '').toLowerCase();
         const isExplicitRevive = btnText.includes('revive') || (btn.href && btn.href.includes('action=revive'));
         if (!isExplicitRevive) return;
 
-        // Skip disabled buttons
         if (btn.classList.contains('disabled') || btn.querySelector('.off') || btn.getAttribute('aria-disabled') === 'true') {
             return;
         }
@@ -234,19 +233,16 @@
         let targetId = null;
         let targetName = 'Unknown';
 
-        // 1. Check direct link parameters on the revive button itself
         if (btn.href) {
             const hrefMatch = btn.href.match(/XID=(\d+)/i) || btn.href.match(/ID=(\d+)/i);
             if (hrefMatch) targetId = hrefMatch[1];
         }
 
-        // 2. Fallback to profile URL context if on profile page
         if (!targetId) {
             const urlMatch = window.location.href.match(/XID=(\d+)/i);
             if (urlMatch) targetId = urlMatch[1];
         }
 
-        // 3. Fallback to closest row container
         if (!targetId) {
             const row = btn.closest('li, tr, div[class*="user"], div[class*="row"]');
             if (row) {
@@ -260,6 +256,7 @@
         }
 
         if (targetId) {
+            lastLogTime = Date.now();
             console.log('[TRPT] Revive button explicitly clicked for ID:', targetId);
             setTimeout(() => {
                 const newRevive = {
@@ -307,9 +304,28 @@
         }
     }
 
+    function createBadgeElement(isPaid) {
+        const badge = document.createElement('span');
+        badge.className = 'trpt-badge';
+        badge.style.cssText = `
+            font-size: 10px;
+            padding: 1px 4px;
+            margin-left: 5px;
+            border-radius: 3px;
+            font-weight: bold;
+            color: #fff;
+            display: inline-block;
+            vertical-align: middle;
+            background-color: ${isPaid ? '#28a745' : '#dc3545'};
+        `;
+        badge.textContent = isPaid ? 'PAID (1/1)' : 'UNPAID (0/1)';
+        return badge;
+    }
+
     function injectReputationBadges() {
         if (!Array.isArray(sharedRevivesCache) || sharedRevivesCache.length === 0) return;
 
+        // 1. STANDARD USER LISTS & LINKS
         const selectors = [
             '#mainContainer a[href*="profiles.php?XID="]:not([data-trpt])',
             '.user-info-value a[href*="XID="]:not([data-trpt])',
@@ -319,7 +335,6 @@
         ];
 
         const profileLinks = document.querySelectorAll(selectors.join(', '));
-
         profileLinks.forEach(link => {
             if (link.closest('#sidebarroot, #chatRoot, .user-menu, .header-root, .nav-group')) return;
 
@@ -332,26 +347,49 @@
             const history = sharedRevivesCache.filter(r => String(r.targetId) === targetId);
 
             if (history.length > 0) {
-                const paidCount = history.filter(r => r.paid === true || String(r.paid).toUpperCase() === "TRUE").length;
-                const percentage = Math.round((paidCount / history.length) * 100);
-
-                const badge = document.createElement('span');
-                badge.className = 'trpt-badge';
-                badge.style.cssText = `
-                    font-size: 10px;
-                    padding: 1px 4px;
-                    margin-left: 4px;
-                    border-radius: 3px;
-                    font-weight: bold;
-                    color: #fff;
-                    display: inline-block;
-                    vertical-align: middle;
-                    background-color: ${percentage >= 75 ? '#28a745' : percentage >= 40 ? '#ffc107' : '#dc3545'};
-                `;
-                badge.textContent = `${percentage}% (${paidCount}/${history.length})`;
-                link.parentNode.insertBefore(badge, link.nextSibling);
+                const latestRevive = history[history.length - 1];
+                const isPaid = latestRevive.paid === true || String(latestRevive.paid).toUpperCase() === "TRUE";
+                link.parentNode.insertBefore(createBadgeElement(isPaid), link.nextSibling);
             }
         });
+
+        // 2. MAIN PROFILE HEADER
+        const profileHeaderName = document.querySelector('.profile-header .name:not([data-trpt]), .profile-container .user-name:not([data-trpt])');
+        if (profileHeaderName) {
+            profileHeaderName.setAttribute('data-trpt', 'true');
+            const urlMatch = window.location.href.match(/XID=(\d+)/i);
+            if (urlMatch) {
+                const targetId = String(urlMatch[1]);
+                const history = sharedRevivesCache.filter(r => String(r.targetId) === targetId);
+                if (history.length > 0) {
+                    const latestRevive = history[history.length - 1];
+                    const isPaid = latestRevive.paid === true || String(latestRevive.paid).toUpperCase() === "TRUE";
+                    profileHeaderName.appendChild(createBadgeElement(isPaid));
+                }
+            }
+        }
+
+        // 3. MINI PROFILE POPUP
+        const miniProfile = document.querySelector('#mini-profile:not([data-trpt]), .mini-profile-wrapper:not([data-trpt])');
+        if (miniProfile) {
+            miniProfile.setAttribute('data-trpt', 'true');
+            const miniLink = miniProfile.querySelector('a[href*="XID="]');
+            const miniName = miniProfile.querySelector('.name, .user-name, [class*="name"]');
+
+            if (miniLink && miniName) {
+                const href = miniLink.getAttribute('href') || '';
+                const match = href.match(/XID=(\d+)/i);
+                if (match) {
+                    const targetId = String(match[1]);
+                    const history = sharedRevivesCache.filter(r => String(r.targetId) === targetId);
+                    if (history.length > 0) {
+                        const latestRevive = history[history.length - 1];
+                        const isPaid = latestRevive.paid === true || String(latestRevive.paid).toUpperCase() === "TRUE";
+                        miniName.appendChild(createBadgeElement(isPaid));
+                    }
+                }
+            }
+        }
     }
 
     if (getApiKey() && !GM_getValue(STORAGE_KEY_USERNAME, '')) {
