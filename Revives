@@ -1,0 +1,302 @@
+// ==UserScript==
+// @name         Torn Revive Payment Tracker (Faction Shared)
+// @namespace    https://torn.com/
+// @version      2.1.0
+// @description  Track revive payments globally across your faction using Google Sheets backend.
+// @author       You
+// @match        https://www.torn.com/*
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_xmlhttpRequest
+// @connect      api.torn.com
+// @connect      script.google.com
+// @connect      script.googleusercontent.com
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    // PASTE YOUR GOOGLE WEB APP URL BETWEEN THE QUOTES BELOW:
+    const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwrGdxSIxZupwZddypRhLTVYinjsRZ9ALT1FP5ad4ILLKfj-HsObFkWJZ1ch2Ydd5SR/exec";
+
+    const STORAGE_KEY_APIKEY = 'trpt_api_key';
+    const STORAGE_KEY_USERNAME = 'trpt_username';
+    let sharedRevivesCache = [];
+
+    function getApiKey() {
+        return GM_getValue(STORAGE_KEY_APIKEY, '');
+    }
+
+    function getReviverName() {
+        // Try stored username, fallback to page DOM element, or default
+        let name = GM_getValue(STORAGE_KEY_USERNAME, '');
+        if (!name) {
+            const userMenuName = document.querySelector('#sidebarroot a[class*="user-name"], .user-name___');
+            if (userMenuName) {
+                name = userMenuName.textContent.trim();
+                GM_setValue(STORAGE_KEY_USERNAME, name);
+            }
+        }
+        return name || 'Unknown';
+    }
+
+    // --- FETCH USER DETAILS FROM API ---
+    function fetchUserDetails(apiKey) {
+        GM_xmlhttpRequest({
+            method: 'GET',
+            url: `https://api.torn.com/user/?selections=profile&key=${apiKey}`,
+            onload: function (response) {
+                try {
+                    const data = JSON.parse(response.responseText);
+                    if (data.name) {
+                        GM_setValue(STORAGE_KEY_USERNAME, data.name);
+                    }
+                } catch (e) {
+                    console.error('TRPT Profile Fetch Error:', e);
+                }
+            }
+        });
+    }
+
+    // --- FETCH GLOBAL DATA FROM GOOGLE SHEETS ---
+    function syncGlobalData() {
+        if (!GOOGLE_SCRIPT_URL || GOOGLE_SCRIPT_URL.includes("YOUR_GOOGLE_WEB_APP_URL")) return;
+
+        GM_xmlhttpRequest({
+            method: 'GET',
+            url: GOOGLE_SCRIPT_URL,
+            onload: function (response) {
+                try {
+                    const data = JSON.parse(response.responseText);
+                    if (Array.isArray(data)) {
+                        sharedRevivesCache = data;
+                    }
+                } catch (e) {
+                    console.error('TRPT Sync Error:', e);
+                }
+            }
+        });
+    }
+
+    syncGlobalData();
+    setInterval(syncGlobalData, 3600000);
+
+    // --- SEND NEW REVIVE TO GOOGLE SHEETS ---
+    function sendReviveToSheet(reviveData) {
+        if (!GOOGLE_SCRIPT_URL || GOOGLE_SCRIPT_URL.includes("YOUR_GOOGLE_WEB_APP_URL")) return;
+
+        GM_xmlhttpRequest({
+            method: 'POST',
+            url: GOOGLE_SCRIPT_URL,
+            headers: { "Content-Type": "text/plain;charset=utf-8" },
+            data: JSON.stringify({
+                action: 'add_revive',
+                timestamp: reviveData.timestamp,
+                targetId: String(reviveData.targetId),
+                targetName: reviveData.targetName,
+                reviverName: getReviverName()
+            }),
+            onload: function(res) {
+                console.log('TRPT Revive Logged:', res.responseText);
+            }
+        });
+    }
+
+    // --- UPDATE PAYMENT IN GOOGLE SHEETS ---
+    function sendPaymentToSheet(targetId, timestamp, paymentType) {
+        if (!GOOGLE_SCRIPT_URL || GOOGLE_SCRIPT_URL.includes("YOUR_GOOGLE_WEB_APP_URL")) return;
+
+        GM_xmlhttpRequest({
+            method: 'POST',
+            url: GOOGLE_SCRIPT_URL,
+            headers: { "Content-Type": "text/plain;charset=utf-8" },
+            data: JSON.stringify({
+                action: 'update_payment',
+                targetId: String(targetId),
+                timestamp: Number(timestamp),
+                paymentType: paymentType
+            }),
+            onload: function(res) {
+                console.log('TRPT Payment Status:', res.responseText);
+                setTimeout(syncGlobalData, 1000);
+            }
+        });
+    }
+
+    // --- RECURRING PAYMENT VERIFICATION ---
+    function checkPayments() {
+        const apiKey = getApiKey();
+        if (!apiKey || sharedRevivesCache.length === 0) return;
+
+        const pending = sharedRevivesCache.filter(r => !r.paid && (Date.now() - r.timestamp < 48 * 60 * 60 * 1000));
+        if (pending.length === 0) return;
+
+        GM_xmlhttpRequest({
+            method: 'GET',
+            url: `https://api.torn.com/user/?selections=events&key=${apiKey}`,
+            onload: function (response) {
+                try {
+                    const data = JSON.parse(response.responseText);
+                    if (data.error || !data.events) return;
+
+                    Object.values(data.events).forEach(ev => {
+                        const eventText = ev.event || '';
+                        const eventTime = ev.timestamp * 1000;
+
+                        pending.forEach(revive => {
+                            if (eventTime >= (revive.timestamp - 300000)) {
+                                const cleanText = eventText.replace(/<[^>]*>?/gm, '');
+                                const idMatch = eventText.includes(`ID=${revive.targetId}`) || cleanText.includes(`XID=${revive.targetId}`) || cleanText.includes(revive.targetId);
+                                const nameMatch = revive.targetName && revive.targetName !== 'Unknown' && cleanText.toLowerCase().includes(revive.targetName.toLowerCase());
+
+                                const isMoney = cleanText.includes('sent you $') || cleanText.includes('transferred $');
+                                const isXanax = cleanText.toLowerCase().includes('xanax');
+
+                                if ((idMatch || nameMatch) && (isMoney || isXanax)) {
+                                    revive.paid = true;
+                                    sendPaymentToSheet(revive.targetId, revive.timestamp, isXanax ? 'Xanax' : 'Cash');
+                                }
+                            }
+                        });
+                    });
+                } catch (e) {
+                    console.error('TRPT Payment Verification Error:', e);
+                }
+            }
+        });
+    }
+
+    setInterval(checkPayments, 3 * 60 * 1000);
+
+    // --- MOBILE TOUCH & CLICK DETECTOR ---
+    let touchStartY = 0;
+
+    document.addEventListener('touchstart', (e) => {
+        if (e.touches && e.touches.length > 0) {
+            touchStartY = e.touches[0].clientY;
+        }
+    }, { passive: true });
+
+    function handleReviveTrigger(e) {
+        if (e.type === 'touchend' && e.changedTouches && e.changedTouches.length > 0) {
+            const touchEndY = e.changedTouches[0].clientY;
+            if (Math.abs(touchEndY - touchStartY) > 10) return;
+        }
+
+        const btn = e.target.closest('a[href*="action=revive"], button[aria-label*="Revive"], .revive');
+        if (!btn) return;
+
+        if (btn.classList.contains('disabled') || btn.querySelector('.off') || btn.getAttribute('aria-disabled') === 'true') {
+            return;
+        }
+
+        let targetId = null;
+        let targetName = 'Unknown';
+
+        const urlMatch = window.location.href.match(/XID=(\d+)/i);
+        if (urlMatch) targetId = urlMatch[1];
+
+        if (!targetId) {
+            const row = btn.closest('li, tr, div[class*="user"], div[class*="row"]');
+            if (row) {
+                const link = row.querySelector('a[href*="XID="]');
+                if (link) {
+                    const m = link.getAttribute('href').match(/XID=(\d+)/i);
+                    if (m) targetId = m[1];
+                    targetName = link.textContent.trim();
+                }
+            }
+        }
+
+        if (targetId) {
+            setTimeout(() => {
+                const newRevive = {
+                    timestamp: Date.now(),
+                    targetId: targetId,
+                    targetName: targetName
+                };
+                sendReviveToSheet(newRevive);
+            }, 500);
+        }
+    }
+
+    document.addEventListener('click', handleReviveTrigger);
+    document.addEventListener('touchend', handleReviveTrigger);
+
+    // --- UI INJECTIONS ---
+    function injectMobileSettings() {
+        const currentKey = getApiKey();
+        const btn = document.getElementById('trpt-settings-btn');
+
+        if (currentKey) {
+            if (btn) btn.remove();
+            return;
+        }
+
+        if (!btn) {
+            const newBtn = document.createElement('button');
+            newBtn.id = 'trpt-settings-btn';
+            newBtn.textContent = '⚙️ Set Revive API Key';
+            newBtn.style.cssText = 'position:fixed; bottom:15px; right:15px; z-index:999999; background:#28a745; color:#fff; border:none; padding:8px 12px; border-radius:5px; font-size:11px; font-weight:bold; box-shadow:0 2px 5px rgba(0,0,0,0.5);';
+
+            newBtn.onclick = function () {
+                const input = window.prompt('Enter your Limited Access API Key:');
+                if (input && input.trim() !== '') {
+                    const key = input.trim();
+                    GM_setValue(STORAGE_KEY_APIKEY, key);
+                    fetchUserDetails(key);
+                    alert('API Key Saved!');
+                    newBtn.remove();
+                    checkPayments();
+                }
+            };
+
+            document.body.appendChild(newBtn);
+        }
+    }
+
+    function injectReputationBadges() {
+        if (sharedRevivesCache.length === 0) return;
+
+        const profileLinks = document.querySelectorAll('a[href*="profiles.php?XID="]:not([data-trpt])');
+
+        profileLinks.forEach(link => {
+            link.setAttribute('data-trpt', 'true');
+            const match = link.getAttribute('href').match(/XID=(\d+)/i);
+            if (!match) return;
+
+            const targetId = match[1];
+            const history = sharedRevivesCache.filter(r => String(r.targetId) === String(targetId));
+
+            if (history.length > 0) {
+                const paidCount = history.filter(r => r.paid).length;
+                const percentage = Math.round((paidCount / history.length) * 100);
+
+                const badge = document.createElement('span');
+                badge.style.cssText = `
+                    font-size: 9px;
+                    padding: 1px 3px;
+                    margin-left: 3px;
+                    border-radius: 2px;
+                    font-weight: bold;
+                    color: #fff;
+                    display: inline-block;
+                    background-color: ${percentage >= 75 ? '#28a745' : percentage >= 40 ? '#ffc107' : '#dc3545'};
+                `;
+                badge.textContent = `${percentage}% (${paidCount}/${history.length})`;
+                link.parentNode.insertBefore(badge, link.nextSibling);
+            }
+        });
+    }
+
+    // Initial check for username if key exists
+    if (getApiKey() && !GM_getValue(STORAGE_KEY_USERNAME, '')) {
+        fetchUserDetails(getApiKey());
+    }
+
+    setInterval(() => {
+        injectMobileSettings();
+        injectReputationBadges();
+    }, 2000);
+
+})();
