@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Revive Payment Tracker (Faction Shared)
 // @namespace    https://torn.com/
-// @version      2.1.9
+// @version      2.2.0
 // @description  Track revive payments globally across your faction using Google Sheets backend.
 // @author       You
 // @match        https://www.torn.com/*
@@ -202,6 +202,50 @@
 
     setInterval(runCheckPayments, 3 * 60 * 1000);
 
+    // --- ENHANCED TARGET NAME EXTRACTION ---
+    function extractTargetName(btn, targetId) {
+        let foundName = '';
+
+        // 1. Search inside the same parent container/row (Hospital list, faction list, profile blocks)
+        const row = btn.closest('li, tr, div[class*="user"], div[class*="row"], div[class*="profile"]');
+        if (row) {
+            const nameEl = row.querySelector('.user-name, .name, a[href*="XID="], div[class*="name"]');
+            if (nameEl) {
+                foundName = nameEl.textContent.replace(/\[\d+\]/g, '').trim();
+            }
+        }
+
+        // 2. Search Mini Profile if active
+        if (!foundName) {
+            const mini = document.querySelector('#mini-profile, .mini-profile-wrapper');
+            if (mini) {
+                const miniName = mini.querySelector('.name, .user-name');
+                if (miniName) foundName = miniName.textContent.replace(/\[\d+\]/g, '').trim();
+            }
+        }
+
+        // 3. Search Main Profile Header if revived directly on profile page
+        if (!foundName) {
+            const profileHeader = document.querySelector('.profile-header .name, .profile-container .user-name');
+            if (profileHeader) {
+                foundName = profileHeader.textContent.replace(/\[\d+\]/g, '').trim();
+            }
+        }
+
+        // 4. Extract from Document Title if on profiles.php (e.g. "Torn - PlayerName [12345]")
+        if (!foundName && window.location.href.includes('profiles.php')) {
+            const titleMatch = document.title.match(/Torn\s*-\s*([^\[]+)/i);
+            if (titleMatch) foundName = titleMatch[1].trim();
+        }
+
+        // Clean up common artifacts (brackets, level indicators)
+        if (foundName) {
+            foundName = foundName.replace(/^[\s\n\r]+|[\s\n\r]+$/g, '').split('[')[0].trim();
+        }
+
+        return foundName || 'Unknown';
+    }
+
     // --- STRICT MOBILE TOUCH & CLICK DETECTOR WITH 5s DEBOUNCE ---
     let touchStartY = 0;
 
@@ -231,7 +275,6 @@
         }
 
         let targetId = null;
-        let targetName = 'Unknown';
 
         if (btn.href) {
             const hrefMatch = btn.href.match(/XID=(\d+)/i) || btn.href.match(/ID=(\d+)/i);
@@ -250,14 +293,16 @@
                 if (link) {
                     const m = link.getAttribute('href').match(/XID=(\d+)/i);
                     if (m) targetId = m[1];
-                    targetName = link.textContent.trim();
                 }
             }
         }
 
         if (targetId) {
             lastLogTime = Date.now();
-            console.log('[TRPT] Revive button explicitly clicked for ID:', targetId);
+            const targetName = extractTargetName(btn, targetId);
+            
+            console.log(`[TRPT] Revive button clicked for Target: ${targetName} [${targetId}]`);
+            
             setTimeout(() => {
                 const newRevive = {
                     timestamp: Date.now(),
