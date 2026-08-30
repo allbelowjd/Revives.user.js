@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Revive Payment Tracker (Faction Shared)
 // @namespace    https://torn.com/
-// @version      2.1.3
+// @version      2.1.4
 // @description  Track revive payments globally across your faction using Google Sheets backend.
 // @author       You
 // @match        https://www.torn.com/*
@@ -104,10 +104,9 @@
             }),
             onload: function(res) {
                 console.log('TRPT Revive Logged:', res.responseText);
-                // Sync latest sheet data then check payments immediately
                 setTimeout(() => {
                     syncGlobalData(() => {
-                        window.checkPayments();
+                        runCheckPayments();
                     });
                 }, 1500);
             }
@@ -136,14 +135,21 @@
     }
 
     // --- RECURRING PAYMENT VERIFICATION ---
-    window.checkPayments = function() {
+    function runCheckPayments() {
         const apiKey = getApiKey();
-        console.log('TRPT: Checking payments... API Key present:', !!apiKey, 'Cached Revives:', sharedRevivesCache.length);
+        console.log('[TRPT] Checking payments... API Key present:', !!apiKey, '| Cached Revives:', sharedRevivesCache.length);
 
-        if (!apiKey || sharedRevivesCache.length === 0) return;
+        if (!apiKey) {
+            console.warn('[TRPT] Payment check skipped: Missing API Key.');
+            return;
+        }
+        if (sharedRevivesCache.length === 0) {
+            console.warn('[TRPT] Payment check skipped: No revive cache loaded from Google Sheets yet.');
+            return;
+        }
 
         const pending = sharedRevivesCache.filter(r => !r.paid && (Date.now() - r.timestamp < 48 * 60 * 60 * 1000));
-        console.log('TRPT: Pending unpaid revives found:', pending.length, pending);
+        console.log('[TRPT] Unpaid revives pending payment check:', pending.length, pending);
 
         if (pending.length === 0) return;
 
@@ -154,7 +160,7 @@
                 try {
                     const data = JSON.parse(response.responseText);
                     if (data.error) {
-                        console.error('TRPT Torn API Error:', data.error);
+                        console.error('[TRPT] Torn API Error:', data.error);
                         return;
                     }
                     if (!data.events) return;
@@ -173,7 +179,7 @@
                                 const isXanax = cleanText.toLowerCase().includes('xanax');
 
                                 if ((idMatch || nameMatch) && (isMoney || isXanax)) {
-                                    console.log('TRPT: Match found in events! Sending payment update to sheet...');
+                                    console.log('[TRPT] Match found! Sending payment update to sheet for TargetID:', revive.targetId);
                                     revive.paid = true;
                                     sendPaymentToSheet(revive.targetId, revive.timestamp, isXanax ? 'Xanax' : 'Cash');
                                 }
@@ -181,13 +187,20 @@
                         });
                     });
                 } catch (e) {
-                    console.error('TRPT Payment Verification Error:', e);
+                    console.error('[TRPT] Payment Verification Error:', e);
                 }
             }
         });
-    };
+    }
 
-    setInterval(window.checkPayments, 3 * 60 * 1000);
+    // Bind function to window so DevTools can call it directly
+    if (typeof unsafeWindow !== 'undefined') {
+        unsafeWindow.checkPayments = runCheckPayments;
+    } else {
+        window.checkPayments = runCheckPayments;
+    }
+
+    setInterval(runCheckPayments, 3 * 60 * 1000);
 
     // --- MOBILE TOUCH & CLICK DETECTOR ---
     let touchStartY = 0;
@@ -268,7 +281,7 @@
                     fetchUserDetails(key);
                     alert('API Key Saved!');
                     newBtn.remove();
-                    window.checkPayments();
+                    runCheckPayments();
                 }
             };
 
