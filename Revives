@@ -5,6 +5,8 @@
 // @description  Track revive payments globally across your faction using Google Sheets backend.
 // @author       You
 // @match        https://www.torn.com/*
+// @downloadURL  https://raw.githubusercontent.com/allbelowjd/Torn-City-Revives/main/Revives
+// @updateURL    https://raw.githubusercontent.com/allbelowjd/Torn-City-Revives/main/Revives
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_xmlhttpRequest
@@ -16,8 +18,10 @@
 (function () {
     'use strict';
 
+    // -------------------------------------------------------------
     // PASTE YOUR GOOGLE WEB APP URL BETWEEN THE QUOTES BELOW:
     const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwrGdxSIxZupwZddypRhLTVYinjsRZ9ALT1FP5ad4ILLKfj-HsObFkWJZ1ch2Ydd5SR/exec";
+    // -------------------------------------------------------------
 
     const STORAGE_KEY_APIKEY = 'trpt_api_key';
     const STORAGE_KEY_USERNAME = 'trpt_username';
@@ -28,7 +32,6 @@
     }
 
     function getReviverName() {
-        // Try stored username, fallback to page DOM element, or default
         let name = GM_getValue(STORAGE_KEY_USERNAME, '');
         if (!name) {
             const userMenuName = document.querySelector('#sidebarroot a[class*="user-name"], .user-name___');
@@ -289,7 +292,7 @@
         });
     }
 
-    // Initial check for username if key exists
+    // Initial check for username if API key already exists
     if (getApiKey() && !GM_getValue(STORAGE_KEY_USERNAME, '')) {
         fetchUserDetails(getApiKey());
     }
