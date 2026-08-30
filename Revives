@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Revive Payment Tracker (Faction Shared)
 // @namespace    https://torn.com/
-// @version      2.1.0
+// @version      2.1.1
 // @description  Track revive payments globally across your faction using Google Sheets backend.
 // @author       You
 // @match        https://www.torn.com/*
