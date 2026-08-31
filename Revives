@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Revive Payment Tracker (Faction Shared)
 // @namespace    https://torn.com/
-// @version      2.2.2
+// @version      2.3.0
 // @description  Track revive payments globally across your faction using Google Sheets backend.
 // @author       You
 // @match        https://www.torn.com/*
@@ -18,30 +18,25 @@
 (function () {
     'use strict';
 
+    // Replace with your Google Apps Script Web App URL
     const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwrGdxSIxZupwZddypRhLTVYinjsRZ9ALT1FP5ad4ILLKfj-HsObFkWJZ1ch2Ydd5SR/exec";
 
     const STORAGE_KEY_APIKEY = 'trpt_api_key';
     const STORAGE_KEY_USERNAME = 'trpt_username';
     let sharedRevivesCache = [];
-    let lastLogTime = 0;
 
     function getApiKey() {
         return GM_getValue(STORAGE_KEY_APIKEY, '');
     }
 
-    function getReviverName() {
-        let name = GM_getValue(STORAGE_KEY_USERNAME, '');
-        if (!name) {
-            const userMenuName = document.querySelector('#sidebarroot a[class*="user-name"], .user-name___');
-            if (userMenuName) {
-                name = userMenuName.textContent.trim();
-                GM_setValue(STORAGE_KEY_USERNAME, name);
-            }
-        }
-        return name || 'Unknown';
+    // Safely extract User ID from any Torn link or current URL
+    function extractUserId(urlStr) {
+        if (!urlStr) return null;
+        const match = urlStr.match(/(?:XID|userID|NID|ID)=(\d+)/i);
+        return match ? String(match[1]) : null;
     }
 
-    // --- FETCH GLOBAL DATA FROM GOOGLE SHEETS ---
+    // --- FETCH DATA FROM GOOGLE SHEETS ---
     function syncGlobalData(callback) {
         if (!GOOGLE_SCRIPT_URL || GOOGLE_SCRIPT_URL.includes("YOUR_GOOGLE_WEB_APP_URL")) return;
 
@@ -67,16 +62,35 @@
         });
     }
 
+    // --- LOG NEW REVIVE TO GOOGLE SHEETS (POST) ---
+    window.logReviveToSheet = function(reviveData) {
+        if (!GOOGLE_SCRIPT_URL) return;
+
+        GM_xmlhttpRequest({
+            method: 'POST',
+            url: GOOGLE_SCRIPT_URL,
+            headers: { "Content-Type": "application/json" },
+            data: JSON.stringify(reviveData),
+            onload: function(response) {
+                console.log('[TRPT] Revive logged successfully:', response.responseText);
+                syncGlobalData(); // Immediate cache refresh
+            },
+            onerror: function(err) {
+                console.error('[TRPT] Failed to log revive to Google Sheets:', err);
+            }
+        });
+    };
+
     syncGlobalData();
     setInterval(syncGlobalData, 30000); // Sync every 30s
 
-    // --- UI INJECTIONS & BADGE CREATION ---
+    // --- BADGE CREATION & DOM INJECTION ---
     function createBadgeElement(isPaid) {
         const badge = document.createElement('span');
         badge.className = 'trpt-badge';
         badge.style.cssText = `
-            font-size: 10px;
-            padding: 2px 5px;
+            font-size: 11px;
+            padding: 2px 6px;
             margin-left: 6px;
             border-radius: 3px;
             font-weight: bold;
@@ -86,6 +100,7 @@
             line-height: 1.2;
             background-color: ${isPaid ? '#28a745' : '#dc3545'};
             box-shadow: 0 1px 2px rgba(0,0,0,0.3);
+            z-index: 99;
         `;
         badge.textContent = isPaid ? 'PAID' : 'UNPAID';
         return badge;
@@ -93,19 +108,24 @@
 
     function isRevivePaid(revive) {
         if (!revive) return false;
-        if (typeof revive.paid === 'boolean') return revive.paid;
-        if (typeof revive.paid === 'string') {
-            const p = revive.paid.toUpperCase();
+        const val = revive.paid !== undefined ? revive.paid : revive.Paid;
+        if (typeof val === 'boolean') return val;
+        if (typeof val === 'string') {
+            const p = val.toUpperCase().trim();
             return p === 'TRUE' || p.includes('TRUE') || p.includes('PAID');
         }
         return false;
     }
 
     function applyBadgeToElement(targetContainer, targetId) {
-        if (!targetContainer) return;
+        if (!targetContainer || !targetId) return;
+
+        const history = sharedRevivesCache.filter(r => {
+            const id = String(r.targetId || r.target_id || r.targetID || r.TargetID || '');
+            return id === String(targetId);
+        });
 
         const existingBadge = targetContainer.querySelector('.trpt-badge');
-        const history = sharedRevivesCache.filter(r => String(r.targetId) === String(targetId));
 
         if (history.length > 0) {
             const latestRevive = history[history.length - 1];
@@ -120,57 +140,58 @@
             } else {
                 targetContainer.appendChild(createBadgeElement(isPaid));
             }
+        } else if (existingBadge) {
+            existingBadge.remove();
         }
     }
 
     function injectReputationBadges() {
         if (!Array.isArray(sharedRevivesCache) || sharedRevivesCache.length === 0) return;
 
-        // 1. MAIN PROFILE HEADER
-        const profileHeaderName = document.querySelector('.profile-header .name, .profile-container .user-name, div[class*="profileHeader"] div[class*="name"]');
-        if (profileHeaderName) {
-            const urlMatch = window.location.href.match(/XID=(\d+)/i);
-            if (urlMatch) {
-                applyBadgeToElement(profileHeaderName, String(urlMatch[1]));
+        // 1. Profile Header
+        const profileHeader = document.querySelector('.user-information, .profile-header, .profile-container, #user-profile-wrapper');
+        if (profileHeader) {
+            const currentId = extractUserId(window.location.href);
+            const nameContainer = profileHeader.querySelector('.name, .user-name, div[class*="name___"], h2, div[class*="user-name"]');
+            if (currentId && nameContainer) {
+                applyBadgeToElement(nameContainer, currentId);
             }
         }
 
-        // 2. MINI PROFILE POPUP
-        const miniProfile = document.querySelector('#mini-profile, .mini-profile-wrapper');
+        // 2. Mini Profile Popups
+        const miniProfile = document.querySelector('#mini-profile, .mini-profile-wrapper, div[class*="miniProfile"]');
         if (miniProfile) {
-            const miniLink = miniProfile.querySelector('a[href*="XID="]');
+            const miniLink = miniProfile.querySelector('a[href*="XID="], a[href*="profiles.php"]');
             const miniName = miniProfile.querySelector('.name, .user-name, [class*="name"]');
             if (miniLink && miniName) {
-                const href = miniLink.getAttribute('href') || '';
-                const match = href.match(/XID=(\d+)/i);
-                if (match) {
-                    applyBadgeToElement(miniName, String(match[1]));
+                const targetId = extractUserId(miniLink.getAttribute('href'));
+                if (targetId) {
+                    applyBadgeToElement(miniName, targetId);
                 }
             }
         }
 
-        // 3. MEMBER LISTS & USER LINKS
-        const profileLinks = document.querySelectorAll('#mainContainer a[href*="profiles.php?XID="], .hospital-list a[href*="XID="], .members-list a[href*="XID="]');
+        // 3. User Links across lists
+        const profileLinks = document.querySelectorAll('a[href*="profiles.php"]');
         profileLinks.forEach(link => {
             if (link.closest('#sidebarroot, #chatRoot, .user-menu, .header-root, .nav-group')) return;
 
-            const href = link.getAttribute('href') || '';
-            const match = href.match(/XID=(\d+)/i);
-            if (!match) return;
+            const targetId = extractUserId(link.getAttribute('href'));
+            if (!targetId) return;
 
-            const targetId = String(match[1]);
-            applyBadgeToElement(link.parentNode, targetId);
+            applyBadgeToElement(link, targetId);
         });
     }
 
-    // --- QUICK DEBUG CHECK ---
-    // Type window.trptDebug() in F12 console to see cached revives
+    // Console Debugging Utility
     window.trptDebug = function() {
-        console.log('API Key:', getApiKey());
-        console.log('Cache Length:', sharedRevivesCache.length);
-        console.log('Cache Data:', sharedRevivesCache);
+        console.log('[TRPT Debug] API Key:', getApiKey());
+        console.log('[TRPT Debug] Current Target ID:', extractUserId(window.location.href));
+        console.log('[TRPT Debug] Cached Records:', sharedRevivesCache.length);
+        console.log('[TRPT Debug] Cache Payload:', sharedRevivesCache);
     };
 
+    // Polling loop for React dynamic rendering
     setInterval(() => {
         injectReputationBadges();
     }, 1500);
