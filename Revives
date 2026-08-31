@@ -85,7 +85,7 @@
     function fetchPast24HourRevives() {
         const apiKey = getApiKey();
         if (!apiKey) {
-            console.warn('[TRPT] Cannot fetch 24-hour revives: No API key stored. Run trptSetKey("YOUR_API_KEY") in console to set it.');
+            console.warn('[TRPT] Cannot fetch 24-hour revives: No API key stored in Tampermonkey storage.');
             return;
         }
 
@@ -254,14 +254,7 @@
         });
     }
 
-    // --- CONSOLE UTILITIES ---
-    window.trptSetKey = function(key) {
-        if (!key) return console.error('[TRPT] Please pass a valid key string: trptSetKey("YOUR_KEY")');
-        GM_setValue(STORAGE_KEY_APIKEY, key);
-        console.log('[TRPT] API Key successfully saved!');
-        fetchPast24HourRevives();
-    };
-
+    // --- CONSOLE DEBUGGING & HELPERS ---
     window.trptDebug = function() {
         console.log('[TRPT Debug] Saved API Key:', getApiKey());
         console.log('[TRPT Debug] Current Target ID:', extractUserId(window.location.href));
