@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Revive Payment Tracker (Faction Shared)
 // @namespace    https://torn.com/
-// @version      2.3.0
+// @version      2.4.0
 // @description  Track revive payments globally across your faction using Google Sheets backend.
 // @author       You
 // @match        https://www.torn.com/*
@@ -19,7 +19,7 @@
     'use strict';
 
     // Replace with your Google Apps Script Web App URL
-    const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwrGdxSIxZupwZddypRhLTVYinjsRZ9ALT1FP5ad4ILLKfj-HsObFkWJZ1ch2Ydd5SR/exec";
+    const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKcbwrGdxSIxZupwZddypRhLTVYinjsRZ9ALT1FP5ad4ILLKfj-HsObFkWJZ1ch2Ydd5SR/exec";
 
     const STORAGE_KEY_APIKEY = 'trpt_api_key';
     const STORAGE_KEY_USERNAME = 'trpt_username';
@@ -81,8 +81,79 @@
         });
     };
 
-    syncGlobalData();
-    setInterval(syncGlobalData, 30000); // Sync every 30s
+    // --- FETCH PAST 24 HOURS OF REVIVES FROM TORN API ---
+    function fetchPast24HourRevives() {
+        const apiKey = getApiKey();
+        if (!apiKey) {
+            console.warn('[TRPT] Cannot fetch 24-hour revives: No API key set in GM storage.');
+            return;
+        }
+
+        // Unix timestamp for 24 hours ago (in seconds)
+        const twentyFourHoursAgo = Math.floor((Date.now() - (24 * 60 * 60 * 1000)) / 1000);
+        const apiUrl = `https://api.torn.com/faction/?selections=revives&from=${twentyFourHoursAgo}&key=${apiKey}`;
+
+        GM_xmlhttpRequest({
+            method: 'GET',
+            url: apiUrl,
+            onload: function(response) {
+                try {
+                    const data = JSON.parse(response.responseText);
+                    if (data.error) {
+                        console.error('[TRPT] Torn API Error:', data.error);
+                        return;
+                    }
+
+                    const revivesObj = data.revives;
+                    if (!revivesObj || typeof revivesObj !== 'object') {
+                        console.log('[TRPT] No revives found in the past 24 hours.');
+                        return;
+                    }
+
+                    // Map existing cached IDs for quick lookup to prevent duplicate posting
+                    const existingReviveIds = new Set(
+                        sharedRevivesCache.map(r => String(r.reviveId || r.revive_id || r.ReviveID || ''))
+                    );
+
+                    let newRevivesFound = 0;
+                    Object.keys(revivesObj).forEach(reviveId => {
+                        const r = revivesObj[reviveId];
+
+                        // Skip if already in Google Sheets cache or older than 24h
+                        if (r.timestamp >= twentyFourHoursAgo && !existingReviveIds.has(String(reviveId))) {
+                            const revivePayload = {
+                                timestamp: new Date(r.timestamp * 1000).toISOString(),
+                                reviveId: String(reviveId),
+                                reviverName: r.reviver_name || 'Unknown',
+                                targetId: String(r.target_id),
+                                targetName: r.target_name || 'Unknown',
+                                paid: r.paid !== undefined ? Boolean(r.paid) : false
+                            };
+
+                            window.logReviveToSheet(revivePayload);
+                            newRevivesFound++;
+                        }
+                    });
+
+                    console.log(`[TRPT] 24-Hour Scan Complete. Added ${newRevivesFound} missing revives to Sheet.`);
+
+                } catch (e) {
+                    console.error('[TRPT] Error processing 24-hour revive data:', e);
+                }
+            },
+            onerror: function(err) {
+                console.error('[TRPT] Error calling Torn API:', err);
+            }
+        });
+    }
+
+    // Initial sync and scheduled 24h revive scan
+    syncGlobalData(function() {
+        fetchPast24HourRevives();
+    });
+
+    setInterval(syncGlobalData, 30000); // Sync cache every 30s
+    setInterval(fetchPast24HourRevives, 5 * 60 * 1000); // Check API for 24h revives every 5 mins
 
     // --- BADGE CREATION & DOM INJECTION ---
     function createBadgeElement(isPaid) {
@@ -189,6 +260,7 @@
         console.log('[TRPT Debug] Current Target ID:', extractUserId(window.location.href));
         console.log('[TRPT Debug] Cached Records:', sharedRevivesCache.length);
         console.log('[TRPT Debug] Cache Payload:', sharedRevivesCache);
+        fetchPast24HourRevives(); // Allow manual trigger via console
     };
 
     // Polling loop for React dynamic rendering
