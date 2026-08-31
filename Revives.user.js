@@ -5,8 +5,8 @@
 // @description  Track revive payments globally across your faction using Google Sheets backend.
 // @author       You
 // @match        https://www.torn.com/*
-// @downloadURL  https://raw.githubusercontent.com/allbelowjd/Torn-City-Revives/main/Revives.user.js
-// @updateURL    https://raw.githubusercontent.com/allbelowjd/Torn-City-Revives/main/Revives.user.js
+// @downloadURL  https://raw.githubusercontent.com/allbelowjd/Torn-City-Revives/main/Revives
+// @updateURL    https://raw.githubusercontent.com/allbelowjd/Torn-City-Revives/main/Revives
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_xmlhttpRequest
