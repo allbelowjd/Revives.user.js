@@ -19,7 +19,7 @@
     'use strict';
 
     // Replace with your Google Apps Script Web App URL
-    const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKcbwrGdxSIxZupwZddypRhLTVYinjsRZ9ALT1FP5ad4ILLKfj-HsObFkWJZ1ch2Ydd5SR/exec";
+    const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwrGdxSIxZupwZddypRhLTVYinjsRZ9ALT1FP5ad4ILLKfj-HsObFkWJZ1ch2Ydd5SR/exec";
 
     const STORAGE_KEY_APIKEY = 'trpt_api_key';
     const STORAGE_KEY_USERNAME = 'trpt_username';
@@ -85,7 +85,7 @@
     function fetchPast24HourRevives() {
         const apiKey = getApiKey();
         if (!apiKey) {
-            console.warn('[TRPT] Cannot fetch 24-hour revives: No API key set in GM storage.');
+            console.warn('[TRPT] Cannot fetch 24-hour revives: No API key stored. Run trptSetKey("YOUR_API_KEY") in console to set it.');
             return;
         }
 
@@ -254,13 +254,20 @@
         });
     }
 
-    // Console Debugging Utility
+    // --- CONSOLE UTILITIES ---
+    window.trptSetKey = function(key) {
+        if (!key) return console.error('[TRPT] Please pass a valid key string: trptSetKey("YOUR_KEY")');
+        GM_setValue(STORAGE_KEY_APIKEY, key);
+        console.log('[TRPT] API Key successfully saved!');
+        fetchPast24HourRevives();
+    };
+
     window.trptDebug = function() {
-        console.log('[TRPT Debug] API Key:', getApiKey());
+        console.log('[TRPT Debug] Saved API Key:', getApiKey());
         console.log('[TRPT Debug] Current Target ID:', extractUserId(window.location.href));
         console.log('[TRPT Debug] Cached Records:', sharedRevivesCache.length);
         console.log('[TRPT Debug] Cache Payload:', sharedRevivesCache);
-        fetchPast24HourRevives(); // Allow manual trigger via console
+        fetchPast24HourRevives();
     };
 
     // Polling loop for React dynamic rendering
