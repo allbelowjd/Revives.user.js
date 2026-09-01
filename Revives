@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Revive Payment Tracker (Faction Shared)
 // @namespace    https://torn.com/
-// @version      2.4.0
+// @version      2.5.0
 // @description  Track revive payments globally across your faction using Google Sheets backend.
 // @author       You
 // @match        https://www.torn.com/*
@@ -36,6 +36,18 @@
         return match ? String(match[1]) : null;
     }
 
+    // Parse boolean status reliably across String/Boolean types
+    function isRevivePaid(revive) {
+        if (!revive) return false;
+        const val = revive.paid !== undefined ? revive.paid : revive.Paid;
+        if (typeof val === 'boolean') return val;
+        if (typeof val === 'string') {
+            const p = val.toUpperCase().trim();
+            return p === 'TRUE' || p.includes('TRUE') || p.includes('PAID');
+        }
+        return false;
+    }
+
     // --- FETCH DATA FROM GOOGLE SHEETS ---
     function syncGlobalData(callback) {
         if (!GOOGLE_SCRIPT_URL || GOOGLE_SCRIPT_URL.includes("YOUR_GOOGLE_WEB_APP_URL")) return;
@@ -62,7 +74,7 @@
         });
     }
 
-    // --- LOG NEW REVIVE TO GOOGLE SHEETS (POST) ---
+    // --- LOG OR UPDATE REVIVE TO GOOGLE SHEETS (POST) ---
     window.logReviveToSheet = function(reviveData) {
         if (!GOOGLE_SCRIPT_URL) return;
 
@@ -72,11 +84,11 @@
             headers: { "Content-Type": "application/json" },
             data: JSON.stringify(reviveData),
             onload: function(response) {
-                console.log('[TRPT] Revive logged successfully:', response.responseText);
+                console.log('[TRPT] Revive logged/updated successfully:', response.responseText);
                 syncGlobalData(); // Immediate cache refresh
             },
             onerror: function(err) {
-                console.error('[TRPT] Failed to log revive to Google Sheets:', err);
+                console.error('[TRPT] Failed to log/update revive to Google Sheets:', err);
             }
         });
     };
@@ -110,24 +122,28 @@
                         return;
                     }
 
-                    // Map existing cached IDs for quick lookup to prevent duplicate posting
-                    const existingReviveIds = new Set(
-                        sharedRevivesCache.map(r => String(r.reviveId || r.revive_id || r.ReviveID || ''))
-                    );
-
                     let newRevivesFound = 0;
                     Object.keys(revivesObj).forEach(reviveId => {
                         const r = revivesObj[reviveId];
 
-                        // Skip if already in Google Sheets cache or older than 24h
-                        if (r.timestamp >= twentyFourHoursAgo && !existingReviveIds.has(String(reviveId))) {
+                        if (r.timestamp < twentyFourHoursAgo) return;
+
+                        // Check if revive already exists in cached sheet data
+                        const existing = sharedRevivesCache.find(
+                            cached => String(cached.reviveId || cached.revive_id || cached.ReviveID || '') === String(reviveId)
+                        );
+
+                        const apiIsPaid = r.paid !== undefined ? Boolean(r.paid) : false;
+
+                        // Post update if record is completely NEW, or if paid status changed from FALSE -> TRUE
+                        if (!existing || (!isRevivePaid(existing) && apiIsPaid)) {
                             const revivePayload = {
                                 timestamp: new Date(r.timestamp * 1000).toISOString(),
                                 reviveId: String(reviveId),
                                 reviverName: r.reviver_name || 'Unknown',
                                 targetId: String(r.target_id),
                                 targetName: r.target_name || 'Unknown',
-                                paid: r.paid !== undefined ? Boolean(r.paid) : false
+                                paid: apiIsPaid
                             };
 
                             window.logReviveToSheet(revivePayload);
@@ -135,7 +151,7 @@
                         }
                     });
 
-                    console.log(`[TRPT] 24-Hour Scan Complete. Added ${newRevivesFound} missing revives to Sheet.`);
+                    console.log(`[TRPT] 24-Hour Scan Complete. Logged/Updated ${newRevivesFound} revive records.`);
 
                 } catch (e) {
                     console.error('[TRPT] Error processing 24-hour revive data:', e);
@@ -175,17 +191,6 @@
         `;
         badge.textContent = isPaid ? 'PAID' : 'UNPAID';
         return badge;
-    }
-
-    function isRevivePaid(revive) {
-        if (!revive) return false;
-        const val = revive.paid !== undefined ? revive.paid : revive.Paid;
-        if (typeof val === 'boolean') return val;
-        if (typeof val === 'string') {
-            const p = val.toUpperCase().trim();
-            return p === 'TRUE' || p.includes('TRUE') || p.includes('PAID');
-        }
-        return false;
     }
 
     function applyBadgeToElement(targetContainer, targetId) {
