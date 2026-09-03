@@ -1,12 +1,13 @@
 // ==UserScript==
 // @name         Torn Revive Payment Tracker (Faction Shared)
 // @namespace    https://torn.com/
-// @version      3.0.1
+// @version      3.1.0
 // @description  Track revive payments globally across your faction using Google Sheets backend & auto payment matching.
 // @author       You
 // @match        https://www.torn.com/*
 // @grant        GM_getValue
 // @grant        GM_setValue
+// @grant        GM_registerMenuCommand
 // @grant        GM_xmlhttpRequest
 // @connect      api.torn.com
 // @connect      script.google.com
@@ -20,8 +21,33 @@
     const STORAGE_KEY_APIKEY = 'trpt_api_key';
     let sharedRevivesCache = [];
 
+    // --- API KEY MANAGEMENT ---
     function getApiKey() {
         return GM_getValue(STORAGE_KEY_APIKEY, '');
+    }
+
+    function promptForApiKey() {
+        const currentKey = getApiKey();
+        const newKey = prompt('[TRPT] Enter your Torn API Key (Limited or Full access required):', currentKey);
+        if (newKey !== null) {
+            GM_setValue(STORAGE_KEY_APIKEY, newKey.trim());
+            alert('[TRPT] API Key updated successfully!');
+            fetchPast24HourRevives();
+            checkIncomingPayments();
+        }
+    }
+
+    // Register Tampermonkey extension menu action
+    if (typeof GM_registerMenuCommand !== 'undefined') {
+        GM_registerMenuCommand("Set/Update Torn API Key", promptForApiKey);
+    }
+
+    function ensureApiKey() {
+        let apiKey = getApiKey();
+        if (!apiKey) {
+            promptForApiKey();
+        }
+        return getApiKey();
     }
 
     function extractUserId(urlStr) {
@@ -83,7 +109,7 @@
 
     // --- FETCH 24H REVIVES FROM TORN API ---
     function fetchPast24HourRevives() {
-        const apiKey = getApiKey();
+        const apiKey = ensureApiKey();
         if (!apiKey) return;
 
         const twentyFourHoursAgo = Math.floor((Date.now() - (24 * 60 * 60 * 1000)) / 1000);
@@ -125,7 +151,7 @@
 
     // --- AUTOMATED INCOMING PAYMENT SCANNER ---
     function checkIncomingPayments() {
-        const apiKey = getApiKey();
+        const apiKey = ensureApiKey();
         if (!apiKey) return;
 
         const apiUrl = `https://api.torn.com/user/?selections=events&key=${apiKey}`;
@@ -250,7 +276,7 @@
     function injectReputationBadges() {
         if (!Array.isArray(sharedRevivesCache) || sharedRevivesCache.length === 0) return;
 
-        // 1. Profile Page Header (Modern React & Legacy Selectors)
+        // 1. Profile Header
         if (window.location.href.includes('profiles.php')) {
             const currentId = extractUserId(window.location.href);
             const nameContainer = document.querySelector(
@@ -276,6 +302,7 @@
 
     // --- INITIALIZATION ---
     syncGlobalData(function() {
+        ensureApiKey();
         fetchPast24HourRevives();
         checkIncomingPayments();
     });
