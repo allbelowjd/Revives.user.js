@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Revive Payment Tracker (Faction Shared)
 // @namespace    https://torn.com/
-// @version      3.4.0
+// @version      3.4.1
 // @description  Track revive payments globally across your faction using Google Sheets backend & auto payment matching.
 // @author       You
 // @match        https://www.torn.com/*
@@ -286,47 +286,50 @@
     function injectReputationBadges() {
         if (!Array.isArray(sharedRevivesCache) || sharedRevivesCache.length === 0) return;
 
-        // 1. Profile Page Main Header
+        // 1. Full Profile Page Main Header
         if (window.location.href.includes('profiles.php')) {
             const currentId = extractUserId(window.location.href);
             if (currentId) {
                 const mainHeader = document.querySelector('.profile-wrapper .title-container, .user-information .heading, h2.title');
-                if (mainHeader && !mainHeader.querySelector('.trpt-badge')) {
+                if (mainHeader) {
                     applyBadgeToElement(mainHeader, currentId);
                 }
             }
         }
 
-        // 2. Mini Profiles (Popup Modal on Desktop)
-        const miniProfileHeaders = document.querySelectorAll('#mini-profile-wrapper .name, div[class*="miniProfile"] [class*="name"]');
-        miniProfileHeaders.forEach(header => {
-            const profileLink = header.closest('#mini-profile-wrapper, div[class*="miniProfile"]').querySelector('a[href*="profiles.php"]');
+        // 2. Desktop Mini Profile Popups
+        const miniProfiles = document.querySelectorAll('#mini-profile-wrapper, [class*="miniProfileContainer"], [class*="miniProfileWrapper"]');
+        miniProfiles.forEach(mini => {
+            const profileLink = mini.querySelector('a[href*="profiles.php"]');
             if (profileLink) {
                 const targetId = extractUserId(profileLink.getAttribute('href'));
-                if (targetId) applyBadgeToElement(header, targetId);
-            }
-        });
-
-        // 3. Search Bar Autocomplete Results
-        const searchResults = document.querySelectorAll('.search-results-list a[href*="profiles.php"], [class*="searchResult"] a[href*="profiles.php"], .user-search-result');
-        searchResults.forEach(item => {
-            const link = item.tagName === 'A' ? item : item.querySelector('a[href*="profiles.php"]');
-            if (link) {
-                const targetId = extractUserId(link.getAttribute('href'));
-                const nameSpan = link.querySelector('.name, span[class*="name"]') || link;
-                if (targetId && nameSpan) {
-                    applyBadgeToElement(nameSpan, targetId);
+                const nameContainer = mini.querySelector('.name, [class*="name"], .user-name, h4') || profileLink;
+                if (targetId && nameContainer) {
+                    applyBadgeToElement(nameContainer, targetId);
                 }
             }
         });
 
-        // 4. Standard Text Links Across Torn Tables/Lists
+        // 3. Header Search Bar Dropdown Results
+        const searchItems = document.querySelectorAll('#search-autocomplete-list li, [class*="searchResult"] li, .search-results-wrapper a[href*="profiles.php"], ul[class*="results"] a[href*="profiles.php"]');
+        searchItems.forEach(item => {
+            const link = item.tagName === 'A' ? item : item.querySelector('a[href*="profiles.php"]');
+            if (link) {
+                const targetId = extractUserId(link.getAttribute('href'));
+                const textWrapper = link.querySelector('.name, [class*="name"], span') || link;
+                if (targetId && textWrapper) {
+                    applyBadgeToElement(textWrapper, targetId);
+                }
+            }
+        });
+
+        // 4. Standard Text Links Across Main Content Tables & Lists
         const profileLinks = document.querySelectorAll('a[href*="profiles.php?XID="], a[href*="XID="]');
 
         profileLinks.forEach(link => {
-            // Skip sidebar, header navbar, chat, action icons, or image wrappers
+            // Exclude sidebars, chatbox, user controls, and raw image tags
             if (
-                link.closest('#sidebarroot, #chatRoot, .user-menu, .header-root, .action-images, .medals-container, .search-results-list') ||
+                link.closest('#sidebarroot, #chatRoot, .user-menu, .action-images, .medals-container') ||
                 link.querySelector('img, svg, canvas, i, span.icon') ||
                 link.textContent.trim() === ''
             ) {
