@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Revive Payment Tracker (Faction Shared)
 // @namespace    https://torn.com/
-// @version      3.5.2
+// @version      3.5.3
 // @description  Track revive payments globally across your faction using Google Sheets backend & auto payment matching.
 // @author       You
 // @match        https://www.torn.com/*
@@ -91,7 +91,7 @@
         });
     }
 
-    window.logReviveToSheet = function(reviveData) {
+    window.logReviveToSheet = function(reviveData, callback) {
         if (!GOOGLE_SCRIPT_URL) return;
         GM_xmlhttpRequest({
             method: 'POST',
@@ -99,14 +99,17 @@
             headers: { "Content-Type": "application/json" },
             data: JSON.stringify(reviveData),
             onload: function() {
-                syncGlobalData();
+                // Short delay to allow Google Sheets Apps Script trigger execution
+                setTimeout(() => {
+                    syncGlobalData(callback);
+                }, 1000);
             }
         });
     };
 
     function fetchPast24HourRevives() {
         if (isFetchingRevives) return;
-        const apiKey = ensureApiKey();
+        const apiKey = getApiKey();
         if (!apiKey) return;
 
         isFetchingRevives = true;
@@ -130,12 +133,12 @@
 
                         if (!existing) {
                             window.logReviveToSheet({
-                                timestamp: new Date(r.timestamp * 1000).toISOString(),
+                                timestamp: new Date((r.timestamp || Math.floor(Date.now() / 1000)) * 1000).toISOString(),
                                 reviveId: String(reviveId),
-                                reviverName: r.reviver_name || 'Unknown',
-                                targetId: String(r.target_id || r.target_userID || ''),
-                                targetName: r.target_name || 'Unknown',
-                                paid: Boolean(r.paid)
+                                reviverName: r.reviver_name || r.reviver_username || 'Unknown',
+                                targetId: String(r.target_id || r.target_userID || r.target_user_id || ''),
+                                targetName: r.target_name || r.target_username || 'Unknown',
+                                paid: isRevivePaid(r)
                             });
                         }
                     });
@@ -150,13 +153,18 @@
     window.togglePaymentStatus = function(targetId) {
         const history = sharedRevivesCache.filter(r => String(r.targetId || r.target_id || '').trim() === String(targetId).trim());
         let latest = history[history.length - 1];
-        if (!latest) return;
 
-        let newPaidStatus = !isRevivePaid(latest);
+        let newPaidStatus = latest ? !isRevivePaid(latest) : true;
+
+        // Optimistically update local cache first for instant feedback
+        if (latest) {
+            latest.paid = newPaidStatus;
+            injectReputationBadges();
+        }
 
         window.logReviveToSheet({
             timestamp: latest?.timestamp || new Date().toISOString(),
-            reviveId: String(latest?.reviveId),
+            reviveId: String(latest?.reviveId || `manual_${Date.now()}`),
             reviverName: latest?.reviverName || 'You',
             targetId: String(targetId),
             targetName: latest?.targetName || 'Manual Entry',
@@ -226,7 +234,7 @@
         isInjecting = true;
 
         try {
-            // Expanded Profile Header Selectors
+            // Profile Headers
             if (window.location.href.includes('profiles.php')) {
                 const currentProfileId = extractUserId(window.location.href);
                 const profileHeader = document.querySelector(`
@@ -274,28 +282,21 @@
         injectNow: injectReputationBadges
     };
 
+    // Initialize
     syncGlobalData(function() {
         ensureApiKey();
         fetchPast24HourRevives();
     });
 
     let debouncedTimer = null;
-    const observer = new MutationObserver((mutations) => {
-        const isSelfMutation = mutations.every(m => {
-            return Array.from(m.addedNodes).concat(Array.from(m.removedNodes)).every(node => {
-                return node.classList && node.classList.contains('trpt-badge');
-            });
-        });
-
-        if (isSelfMutation) return;
-
+    const observer = new MutationObserver(() => {
         if (debouncedTimer) clearTimeout(debouncedTimer);
-        debouncedTimer = setTimeout(injectReputationBadges, 250);
+        debouncedTimer = setTimeout(injectReputationBadges, 300);
     });
 
     observer.observe(document.body, { childList: true, subtree: true });
 
-    setInterval(syncGlobalData, 15000);
-    setInterval(fetchPast24HourRevives, 30000);
+    setInterval(syncGlobalData, 30000);
+    setInterval(fetchPast24HourRevives, 60000);
 
 })();
