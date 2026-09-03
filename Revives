@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Revive Payment Tracker (Faction Shared)
 // @namespace    https://torn.com/
-// @version      3.2.0
+// @version      3.3.0
 // @description  Track revive payments globally across your faction using Google Sheets backend & auto payment matching.
 // @author       You
 // @match        https://www.torn.com/*
@@ -282,31 +282,34 @@
         }
     }
 
+    // --- REFINED BADGE INJECTION logic ---
     function injectReputationBadges() {
         if (!Array.isArray(sharedRevivesCache) || sharedRevivesCache.length === 0) return;
 
-        // 1. Profile Page Header
+        // 1. Profile Page Main Header (Target ONLY primary user header container)
         if (window.location.href.includes('profiles.php')) {
             const currentId = extractUserId(window.location.href);
-            
-            const headerTargets = document.querySelectorAll(`
-                .user-information .name,
-                .profile-header .name,
-                div[class*="userInformation"] div[class*="name"],
-                div[class*="profileHeader"] h2,
-                .profile-container .title-container,
-                #user-profile-wrapper h2
-            `);
-
-            headerTargets.forEach(target => {
-                if (currentId) applyBadgeToElement(target, currentId);
-            });
+            if (currentId) {
+                const mainHeader = document.querySelector('.profile-wrapper .title-container, .user-information .heading, h2.title');
+                if (mainHeader && !mainHeader.querySelector('.trpt-badge')) {
+                    applyBadgeToElement(mainHeader, currentId);
+                    return;
+                }
+            }
         }
 
-        // 2. Profile Links Across the Site
-        const profileLinks = document.querySelectorAll('a[href*="profiles.php"], a[href*="XID="]');
+        // 2. Explicit Text Profile Links across Torn
+        const profileLinks = document.querySelectorAll('a[href*="profiles.php?XID="], a[href*="XID="]');
+
         profileLinks.forEach(link => {
-            if (link.closest('#sidebarroot, #chatRoot, .user-menu, .header-root')) return;
+            // Filter out non-text elements (avatars, icons, buttons, menus, badges/medals)
+            if (
+                link.closest('#sidebarroot, #chatRoot, .user-menu, .header-root, .action-images, .medals-container') ||
+                link.querySelector('img, svg, canvas, i, span.icon') ||
+                link.textContent.trim() === ''
+            ) {
+                return;
+            }
 
             const targetId = extractUserId(link.getAttribute('href'));
             if (targetId) {
