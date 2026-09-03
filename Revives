@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Revive Payment Tracker (Faction Shared)
 // @namespace    https://torn.com/
-// @version      3.4.8
+// @version      3.4.9
 // @description  Track revive payments globally across your faction using Google Sheets backend & auto payment matching.
 // @author       You
 // @match        https://www.torn.com/*
@@ -148,11 +148,13 @@
     window.togglePaymentStatus = function(targetId) {
         const history = sharedRevivesCache.filter(r => String(r.targetId || r.target_id || '').trim() === String(targetId).trim());
         let latest = history[history.length - 1];
-        let newPaidStatus = latest ? !isRevivePaid(latest) : true;
+        if (!latest) return;
+
+        let newPaidStatus = !isRevivePaid(latest);
 
         window.logReviveToSheet({
             timestamp: latest?.timestamp || new Date().toISOString(),
-            reviveId: String(latest?.reviveId || 'manual_' + Date.now()),
+            reviveId: String(latest?.reviveId),
             reviverName: latest?.reviverName || 'You',
             targetId: String(targetId),
             targetName: latest?.targetName || 'Manual Entry',
@@ -160,11 +162,11 @@
         });
     };
 
-    function createBadgeElement(isPaid, targetId, isNoRecord = false) {
+    function createBadgeElement(isPaid, targetId) {
         const badge = document.createElement('span');
         badge.className = 'trpt-badge';
-        const color = isNoRecord ? '#6c757d' : (isPaid ? '#28a745' : '#dc3545');
-        const label = isNoRecord ? 'NO RECORD' : (isPaid ? 'PAID' : 'UNPAID');
+        const color = isPaid ? '#28a745' : '#dc3545';
+        const label = isPaid ? 'PAID' : 'UNPAID';
 
         badge.style.cssText = `
             font-size: 11px !important;
@@ -192,7 +194,7 @@
         return badge;
     }
 
-    function applyBadgeToElement(targetContainer, targetId, allowNoRecordFallback = false) {
+    function applyBadgeToElement(targetContainer, targetId) {
         if (!targetContainer || !targetId) return;
 
         const normalizedTargetId = String(targetId).trim();
@@ -210,11 +212,7 @@
                     existingBadge.style.backgroundColor = expectedColor;
                 }
             } else {
-                targetContainer.appendChild(createBadgeElement(isPaid, normalizedTargetId, false));
-            }
-        } else if (allowNoRecordFallback) {
-            if (!existingBadge) {
-                targetContainer.appendChild(createBadgeElement(false, normalizedTargetId, true));
+                targetContainer.appendChild(createBadgeElement(isPaid, normalizedTargetId));
             }
         } else if (existingBadge) {
             existingBadge.remove();
@@ -231,7 +229,7 @@
                 const currentProfileId = extractUserId(window.location.href);
                 const profileHeader = document.querySelector('.user-information .title-container, .profile-header .name, .profile-container .user-name');
                 if (currentProfileId && profileHeader) {
-                    applyBadgeToElement(profileHeader, currentProfileId, true);
+                    applyBadgeToElement(profileHeader, currentProfileId);
                 }
             }
 
@@ -242,17 +240,17 @@
                 if (profileLink) {
                     const targetId = extractUserId(profileLink.getAttribute('href'));
                     const nameContainer = mini.querySelector('[class*="name"], .user-name, h4, .title') || profileLink;
-                    if (targetId && nameContainer) applyBadgeToElement(nameContainer, targetId, true);
+                    if (targetId && nameContainer) applyBadgeToElement(nameContainer, targetId);
                 }
             });
 
-            // 3. Lists and tables (ONLY if record exists)
+            // 3. Profile links across lists and tables
             const profileLinks = document.querySelectorAll('a[href*="profiles.php?XID="], a[href*="step=profile"]');
             profileLinks.forEach(link => {
                 if (link.closest('#sidebarroot, #chatRoot') || link.querySelector('.trpt-badge')) return;
                 const targetId = extractUserId(link.getAttribute('href'));
                 if (targetId && link.textContent.trim().length > 0) {
-                    applyBadgeToElement(link, targetId, false);
+                    applyBadgeToElement(link, targetId);
                 }
             });
         } finally {
@@ -267,7 +265,6 @@
 
     let debouncedTimer = null;
     const observer = new MutationObserver((mutations) => {
-        // Ignore mutations caused by our own badges
         const isSelfMutation = mutations.every(m => {
             return Array.from(m.addedNodes).concat(Array.from(m.removedNodes)).every(node => {
                 return node.classList && node.classList.contains('trpt-badge');
