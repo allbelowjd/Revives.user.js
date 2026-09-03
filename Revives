@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Revive Payment Tracker (Faction Shared)
 // @namespace    https://torn.com/
-// @version      3.4.3
+// @version      3.4.4
 // @description  Track revive payments globally across your faction using Google Sheets backend & auto payment matching.
 // @author       You
 // @match        https://www.torn.com/*
@@ -31,12 +31,11 @@
 
     function promptForApiKey() {
         const currentKey = getApiKey();
-        const newKey = prompt('[TRPT] Enter your Torn API Key (Limited or Full access required):', currentKey);
+        const newKey = prompt('[TRPT] Enter your Torn API Key:', currentKey);
         if (newKey !== null) {
             GM_setValue(STORAGE_KEY_APIKEY, newKey.trim());
-            alert('[TRPT] API Key updated successfully!');
+            alert('[TRPT] API Key updated!');
             fetchPast24HourRevives();
-            checkIncomingPayments();
         }
     }
 
@@ -46,9 +45,7 @@
 
     function ensureApiKey() {
         let apiKey = getApiKey();
-        if (!apiKey) {
-            promptForApiKey();
-        }
+        if (!apiKey) promptForApiKey();
         return getApiKey();
     }
 
@@ -70,7 +67,7 @@
         return false;
     }
 
-    // --- FETCH DATA FROM GOOGLE SHEETS ---
+    // --- SYNC FROM GOOGLE SHEETS ---
     function syncGlobalData(callback) {
         if (!GOOGLE_SCRIPT_URL) return;
 
@@ -78,30 +75,26 @@
             method: 'GET',
             url: GOOGLE_SCRIPT_URL,
             anonymous: true,
-            followRedirects: true,
             onload: function (response) {
-                if (response.responseText.trim().startsWith('<')) {
-                    console.warn('[TRPT] Received HTML response instead of JSON.');
-                    return;
-                }
-
                 try {
                     const data = JSON.parse(response.responseText);
                     if (Array.isArray(data)) {
                         sharedRevivesCache = data;
+                        console.log('[TRPT] Cache updated:', sharedRevivesCache.length, 'records');
                         injectReputationBadges();
                         if (typeof callback === 'function') callback();
                     }
                 } catch (e) {
-                    console.error('[TRPT] Sync Parse Error:', e);
+                    console.error('[TRPT] Google Sheet Sync Failed. Verify Web App Deployment is set to "Anyone":', e);
                 }
             }
         });
     }
 
-    // --- LOG OR UPDATE REVIVE TO GOOGLE SHEETS ---
+    // --- LOG TO GOOGLE SHEETS ---
     window.logReviveToSheet = function(reviveData) {
         if (!GOOGLE_SCRIPT_URL) return;
+        console.log('[TRPT] Sending payload to Sheet:', reviveData);
 
         GM_xmlhttpRequest({
             method: 'POST',
@@ -109,13 +102,16 @@
             headers: { "Content-Type": "application/json" },
             data: JSON.stringify(reviveData),
             onload: function(response) {
-                console.log('[TRPT] Logged to sheet:', response.responseText);
+                console.log('[TRPT] Logged response:', response.responseText);
                 syncGlobalData();
+            },
+            onerror: function(err) {
+                console.error('[TRPT] POST Request failed:', err);
             }
         });
     };
 
-    // --- FETCH 24H REVIVES FROM TORN API ---
+    // --- FETCH REVIVES FROM API ---
     function fetchPast24HourRevives() {
         if (isFetchingRevives) return;
         const apiKey = ensureApiKey();
@@ -132,12 +128,18 @@
                 isFetchingRevives = false;
                 try {
                     const data = JSON.parse(response.responseText);
-                    if (data.error || !data.revives) return;
+                    if (data.error) {
+                        console.error('[TRPT] Torn API Error Code:', data.error.code, data.error.error);
+                        return;
+                    }
+
+                    if (!data.revives || Object.keys(data.revives).length === 0) {
+                        console.warn('[TRPT] No revives returned from Torn API in past 24h.');
+                        return;
+                    }
 
                     Object.keys(data.revives).forEach(reviveId => {
                         const r = data.revives[reviveId];
-                        if (r.timestamp < twentyFourHoursAgo) return;
-
                         const existing = sharedRevivesCache.find(
                             cached => String(cached.reviveId || cached.revive_id || '').trim() === String(reviveId).trim()
                         );
@@ -154,63 +156,40 @@
                         }
                     });
                 } catch (e) {
-                    console.error('[TRPT] Revive Fetch Error:', e);
+                    console.error('[TRPT] Revive Parse Error:', e);
                 }
             },
-            onerror: function() {
-                isFetchingRevives = false;
-            }
+            onerror: function() { isFetchingRevives = false; }
         });
     }
 
-    // --- AUTOMATED INCOMING PAYMENT SCANNER ---
-    function checkIncomingPayments() {
-        const apiKey = ensureApiKey();
-        if (!apiKey) return;
+    // --- DIRECT DOM REVIVE CATCHER (ON-SCREEN SUCCESS DETECTOR) ---
+    function scanHospitalDOMForReviveSuccess() {
+        const successMsg = document.querySelector('.msg.success, [class*="success"]');
+        if (successMsg && successMsg.textContent.includes('revived')) {
+            const profileLink = successMsg.querySelector('a[href*="profiles.php"]');
+            if (profileLink) {
+                const targetId = extractUserId(profileLink.getAttribute('href'));
+                const targetName = profileLink.textContent.trim();
+                const tempReviveId = 'local_' + Date.now();
 
-        const apiUrl = `https://api.torn.com/user/?selections=events&key=${apiKey}`;
-
-        GM_xmlhttpRequest({
-            method: 'GET',
-            url: apiUrl,
-            onload: function(response) {
-                try {
-                    const data = JSON.parse(response.responseText);
-                    if (data.error || !data.events) return;
-
-                    Object.keys(data.events).forEach(eventId => {
-                        const event = data.events[eventId];
-                        const eventText = event.event || '';
-
-                        if (eventText.includes('received') || eventText.includes('sent you') || eventText.includes('money')) {
-                            const senderIdMatch = eventText.match(/XID=(\d+)/i) || eventText.match(/profiles\.php\?XID=(\d+)/i) || eventText.match(/user=(\d+)/i);
-                            if (!senderIdMatch) return;
-
-                            const senderId = String(senderIdMatch[1]).trim();
-
-                            const unpaidRevive = sharedRevivesCache.find(r => {
-                                const tid = String(r.targetId || r.target_id || '').trim();
-                                return tid === senderId && !isRevivePaid(r);
-                            });
-
-                            if (unpaidRevive) {
-                                console.log(`[TRPT Auto-Pay] Payment detected from ID ${senderId}. Marking PAID.`);
-                                window.logReviveToSheet({
-                                    reviveId: String(unpaidRevive.reviveId || unpaidRevive.revive_id),
-                                    targetId: senderId,
-                                    paid: true
-                                });
-                            }
-                        }
+                const existing = sharedRevivesCache.find(r => String(r.targetId).trim() === String(targetId).trim());
+                if (!existing) {
+                    console.log('[TRPT] Captured direct on-screen revive for ID:', targetId);
+                    window.logReviveToSheet({
+                        timestamp: new Date().toISOString(),
+                        reviveId: tempReviveId,
+                        reviverName: 'You',
+                        targetId: targetId,
+                        targetName: targetName,
+                        paid: false
                     });
-                } catch (e) {
-                    console.error('[TRPT Auto-Pay] Error:', e);
                 }
             }
-        });
+        }
     }
 
-    // --- MANUAL TOGGLE FALLBACK ---
+    // --- MANUAL TOGGLE ---
     window.togglePaymentStatus = function(targetId) {
         const history = sharedRevivesCache.filter(r => String(r.targetId || r.target_id || '').trim() === String(targetId).trim());
         if (history.length === 0) return;
@@ -220,7 +199,7 @@
 
         window.logReviveToSheet({
             timestamp: latest.timestamp || new Date().toISOString(),
-            reviveId: String(latest.reviveId),
+            reviveId: String(latest.reviveId || latest.revive_id),
             reviverName: latest.reviverName || 'Unknown',
             targetId: String(latest.targetId),
             targetName: latest.targetName || 'Unknown',
@@ -247,7 +226,7 @@
             z-index: 99999;
         `;
         badge.textContent = isPaid ? 'PAID' : 'UNPAID';
-        badge.title = 'Click to manually toggle status';
+        badge.title = 'Click to toggle payment status';
 
         badge.addEventListener('click', (e) => {
             e.preventDefault();
@@ -262,12 +241,7 @@
         if (!targetContainer || !targetId) return;
 
         const normalizedTargetId = String(targetId).trim();
-
-        const history = sharedRevivesCache.filter(r => {
-            const rowTargetId = String(r.targetId || r.target_id || '').trim();
-            return rowTargetId === normalizedTargetId;
-        });
-
+        const history = sharedRevivesCache.filter(r => String(r.targetId || r.target_id || '').trim() === normalizedTargetId);
         const existingBadge = targetContainer.querySelector('.trpt-badge');
 
         if (history.length > 0) {
@@ -282,82 +256,44 @@
             } else {
                 targetContainer.appendChild(createBadgeElement(isPaid, normalizedTargetId));
             }
-        } else if (existingBadge) {
-            existingBadge.remove();
         }
     }
 
     // --- TARGETED BADGE INJECTION ---
     function injectReputationBadges() {
+        scanHospitalDOMForReviveSuccess();
         if (!Array.isArray(sharedRevivesCache) || sharedRevivesCache.length === 0) return;
 
-        // 1. Full Profile Page Header
-        if (window.location.href.includes('profiles.php')) {
-            const currentId = extractUserId(window.location.href);
-            if (currentId) {
-                const mainHeader = document.querySelector('.profile-wrapper .title-container, .user-information .heading, h2.title');
-                if (mainHeader) applyBadgeToElement(mainHeader, currentId);
-            }
-        }
-
-        // 2. Profile Popups / Mini Profiles (Fixed to hit mini profile card containers)
-        const miniProfiles = document.querySelectorAll('#mini-profile-wrapper, [class*="miniProfileWrapper"], [class*="profile-container"], [class*="user-profile"]');
+        // Mini Profile Box targeting
+        const miniProfiles = document.querySelectorAll('#mini-profile-wrapper, [class*="miniProfileWrapper"], [class*="profile-container"], [class*="user-profile"], .mini-profile');
         miniProfiles.forEach(mini => {
             const profileLink = mini.querySelector('a[href*="profiles.php"], a[href*="XID="]');
             if (profileLink) {
                 const targetId = extractUserId(profileLink.getAttribute('href'));
-                const nameContainer = mini.querySelector('[class*="name"], .user-name, .name, h4, .title') || profileLink;
-                if (targetId && nameContainer) {
-                    applyBadgeToElement(nameContainer, targetId);
-                }
+                const nameContainer = mini.querySelector('[class*="name"], .user-name, h4, .title') || profileLink;
+                if (targetId && nameContainer) applyBadgeToElement(nameContainer, targetId);
             }
         });
 
-        // 3. Search Bar Results
-        const searchItems = document.querySelectorAll('#search-autocomplete-list li, [class*="searchResult"] li, .search-results-wrapper a, #header-root [class*="results"] a');
-        searchItems.forEach(item => {
-            const link = item.tagName === 'A' ? item : item.querySelector('a');
-            if (link) {
-                const targetId = extractUserId(link.getAttribute('href'));
-                const textWrapper = link.querySelector('[class*="name"], span') || link;
-                if (targetId && textWrapper) {
-                    applyBadgeToElement(textWrapper, targetId);
-                }
-            }
-        });
-
-        // 4. Hospital List & General Page Profile Links
+        // Hospital Table Rows targeting
         const profileLinks = document.querySelectorAll('a[href*="profiles.php"], a[href*="XID="]');
         profileLinks.forEach(link => {
-            if (
-                link.closest('#sidebarroot, #chatRoot, .user-menu, .action-images, .medals-container') ||
-                link.querySelector('img, svg, canvas, i, span.icon') ||
-                link.textContent.trim() === ''
-            ) {
-                return;
-            }
-
+            if (link.closest('#sidebarroot, #chatRoot, .user-menu') || link.textContent.trim() === '') return;
             const targetId = extractUserId(link.getAttribute('href'));
-            if (targetId) {
-                applyBadgeToElement(link, targetId);
-            }
+            if (targetId) applyBadgeToElement(link, targetId);
         });
     }
 
-    // --- INITIALIZATION & OBSERVERS ---
+    // --- INIT ---
     syncGlobalData(function() {
         ensureApiKey();
         fetchPast24HourRevives();
-        checkIncomingPayments();
     });
 
-    const observer = new MutationObserver(() => {
-        injectReputationBadges();
-    });
+    const observer = new MutationObserver(() => injectReputationBadges());
     observer.observe(document.body, { childList: true, subtree: true });
 
     setInterval(syncGlobalData, 15000);
     setInterval(fetchPast24HourRevives, 30000);
-    setInterval(checkIncomingPayments, 60000);
 
 })();
