@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Revive Payment Tracker (Faction Shared)
 // @namespace    https://torn.com/
-// @version      3.4.7
+// @version      3.4.8
 // @description  Track revive payments globally across your faction using Google Sheets backend & auto payment matching.
 // @author       You
 // @match        https://www.torn.com/*
@@ -23,6 +23,7 @@
     const STORAGE_KEY_APIKEY = 'trpt_api_key';
     let sharedRevivesCache = [];
     let isFetchingRevives = false;
+    let isInjecting = false;
 
     function getApiKey() {
         return GM_getValue(STORAGE_KEY_APIKEY, '');
@@ -221,35 +222,42 @@
     }
 
     function injectReputationBadges() {
-        // 1. Target Profile Page Header (Allow 'NO RECORD' fallback)
-        if (window.location.href.includes('profiles.php')) {
-            const currentProfileId = extractUserId(window.location.href);
-            const profileHeader = document.querySelector('.user-information .title-container, .profile-header .name, .profile-container .user-name, h2.title');
-            if (currentProfileId && profileHeader) {
-                applyBadgeToElement(profileHeader, currentProfileId, true);
+        if (isInjecting) return;
+        isInjecting = true;
+
+        try {
+            // 1. Profile Page Header
+            if (window.location.href.includes('profiles.php')) {
+                const currentProfileId = extractUserId(window.location.href);
+                const profileHeader = document.querySelector('.user-information .title-container, .profile-header .name, .profile-container .user-name');
+                if (currentProfileId && profileHeader) {
+                    applyBadgeToElement(profileHeader, currentProfileId, true);
+                }
             }
+
+            // 2. Mini Profile Box
+            const miniProfiles = document.querySelectorAll('#mini-profile-wrapper, [class*="miniProfileWrapper"], [class*="profile-container"], .mini-profile');
+            miniProfiles.forEach(mini => {
+                const profileLink = mini.querySelector('a[href*="profiles.php"], a[href*="XID="]');
+                if (profileLink) {
+                    const targetId = extractUserId(profileLink.getAttribute('href'));
+                    const nameContainer = mini.querySelector('[class*="name"], .user-name, h4, .title') || profileLink;
+                    if (targetId && nameContainer) applyBadgeToElement(nameContainer, targetId, true);
+                }
+            });
+
+            // 3. Lists and tables (ONLY if record exists)
+            const profileLinks = document.querySelectorAll('a[href*="profiles.php?XID="], a[href*="step=profile"]');
+            profileLinks.forEach(link => {
+                if (link.closest('#sidebarroot, #chatRoot') || link.querySelector('.trpt-badge')) return;
+                const targetId = extractUserId(link.getAttribute('href'));
+                if (targetId && link.textContent.trim().length > 0) {
+                    applyBadgeToElement(link, targetId, false);
+                }
+            });
+        } finally {
+            isInjecting = false;
         }
-
-        // 2. Mini Profile Box (Allow 'NO RECORD' fallback)
-        const miniProfiles = document.querySelectorAll('#mini-profile-wrapper, [class*="miniProfileWrapper"], [class*="profile-container"], .mini-profile');
-        miniProfiles.forEach(mini => {
-            const profileLink = mini.querySelector('a[href*="profiles.php"], a[href*="XID="]');
-            if (profileLink) {
-                const targetId = extractUserId(profileLink.getAttribute('href'));
-                const nameContainer = mini.querySelector('[class*="name"], .user-name, h4, .title') || profileLink;
-                if (targetId && nameContainer) applyBadgeToElement(nameContainer, targetId, true);
-            }
-        });
-
-        // 3. General Links across site (ONLY show PAID / UNPAID if record exists)
-        const profileLinks = document.querySelectorAll('a[href*="profiles.php?XID="], a[href*="step=profile"]');
-        profileLinks.forEach(link => {
-            if (link.closest('#sidebarroot, #chatRoot, .trpt-badge')) return;
-            const targetId = extractUserId(link.getAttribute('href'));
-            if (targetId && link.textContent.trim().length > 0) {
-                applyBadgeToElement(link, targetId, false);
-            }
-        });
     }
 
     syncGlobalData(function() {
@@ -257,7 +265,21 @@
         fetchPast24HourRevives();
     });
 
-    const observer = new MutationObserver(() => injectReputationBadges());
+    let debouncedTimer = null;
+    const observer = new MutationObserver((mutations) => {
+        // Ignore mutations caused by our own badges
+        const isSelfMutation = mutations.every(m => {
+            return Array.from(m.addedNodes).concat(Array.from(m.removedNodes)).every(node => {
+                return node.classList && node.classList.contains('trpt-badge');
+            });
+        });
+
+        if (isSelfMutation) return;
+
+        if (debouncedTimer) clearTimeout(debouncedTimer);
+        debouncedTimer = setTimeout(injectReputationBadges, 250);
+    });
+
     observer.observe(document.body, { childList: true, subtree: true });
 
     setInterval(syncGlobalData, 15000);
