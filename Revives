@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Revive Payment Tracker (Faction Shared)
 // @namespace    https://torn.com/
-// @version      3.1.0
+// @version      3.2.0
 // @description  Track revive payments globally across your faction using Google Sheets backend & auto payment matching.
 // @author       You
 // @match        https://www.torn.com/*
@@ -37,7 +37,6 @@
         }
     }
 
-    // Register Tampermonkey extension menu action
     if (typeof GM_registerMenuCommand !== 'undefined') {
         GM_registerMenuCommand("Set/Update Torn API Key", promptForApiKey);
     }
@@ -68,14 +67,21 @@
         return false;
     }
 
-    // --- FETCH DATA FROM GOOGLE SHEETS ---
+    // --- HARDENED FETCH DATA FROM GOOGLE SHEETS ---
     function syncGlobalData(callback) {
         if (!GOOGLE_SCRIPT_URL) return;
 
         GM_xmlhttpRequest({
             method: 'GET',
             url: GOOGLE_SCRIPT_URL,
+            anonymous: true,
+            followRedirects: true,
             onload: function (response) {
+                if (response.responseText.trim().startsWith('<')) {
+                    console.warn('[TRPT] Received HTML response instead of JSON. Verify Google Script access is set to "Anyone".');
+                    return;
+                }
+
                 try {
                     const data = JSON.parse(response.responseText);
                     if (Array.isArray(data)) {
@@ -85,8 +91,11 @@
                         if (typeof callback === 'function') callback();
                     }
                 } catch (e) {
-                    console.error('[TRPT] Sync Parse Error:', e);
+                    console.error('[TRPT] Sync Parse Error (Skipped bad response):', e);
                 }
+            },
+            onerror: function(err) {
+                console.error('[TRPT] Network Request Failed:', err);
             }
         });
     }
@@ -225,12 +234,12 @@
             border-radius: 3px;
             font-weight: bold;
             color: #ffffff;
-            display: inline-block;
+            display: inline-block !important;
             vertical-align: middle;
             cursor: pointer;
-            background-color: ${isPaid ? '#28a745' : '#dc3545'};
+            background-color: ${isPaid ? '#28a745' : '#dc3545'} !important;
             box-shadow: 0 1px 2px rgba(0,0,0,0.3);
-            z-index: 999;
+            z-index: 99999;
         `;
         badge.textContent = isPaid ? 'PAID' : 'UNPAID';
         badge.title = 'Click to manually toggle status';
@@ -276,20 +285,26 @@
     function injectReputationBadges() {
         if (!Array.isArray(sharedRevivesCache) || sharedRevivesCache.length === 0) return;
 
-        // 1. Profile Header
+        // 1. Profile Page Header
         if (window.location.href.includes('profiles.php')) {
             const currentId = extractUserId(window.location.href);
-            const nameContainer = document.querySelector(
-                '.user-information .name, .profile-header .name, div[class*="userInformation"] div[class*="name"], div[class*="profileHeader"] h2'
-            ) || document.querySelector('.user-name, #user-profile-wrapper h2');
+            
+            const headerTargets = document.querySelectorAll(`
+                .user-information .name,
+                .profile-header .name,
+                div[class*="userInformation"] div[class*="name"],
+                div[class*="profileHeader"] h2,
+                .profile-container .title-container,
+                #user-profile-wrapper h2
+            `);
 
-            if (currentId && nameContainer) {
-                applyBadgeToElement(nameContainer, currentId);
-            }
+            headerTargets.forEach(target => {
+                if (currentId) applyBadgeToElement(target, currentId);
+            });
         }
 
-        // 2. Profile Links Across Interactive Lists
-        const profileLinks = document.querySelectorAll('a[href*="profiles.php"]');
+        // 2. Profile Links Across the Site
+        const profileLinks = document.querySelectorAll('a[href*="profiles.php"], a[href*="XID="]');
         profileLinks.forEach(link => {
             if (link.closest('#sidebarroot, #chatRoot, .user-menu, .header-root')) return;
 
@@ -300,16 +315,20 @@
         });
     }
 
-    // --- INITIALIZATION ---
+    // --- INITIALIZATION & OBSERVERS ---
     syncGlobalData(function() {
         ensureApiKey();
         fetchPast24HourRevives();
         checkIncomingPayments();
     });
 
+    const observer = new MutationObserver(() => {
+        injectReputationBadges();
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+
     setInterval(syncGlobalData, 30000); // 30s Sheet sync
     setInterval(fetchPast24HourRevives, 5 * 60 * 1000); // 5m Revive fetch
     setInterval(checkIncomingPayments, 2 * 60 * 1000); // 2m Payment check
-    setInterval(injectReputationBadges, 1500); // UI render loop
 
 })();
