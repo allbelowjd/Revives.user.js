@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Revive Payment Tracker (Faction Shared)
 // @namespace    https://torn.com/
-// @version      3.4.2
+// @version      3.4.3
 // @description  Track revive payments globally across your faction using Google Sheets backend & auto payment matching.
 // @author       You
 // @match        https://www.torn.com/*
@@ -54,7 +54,7 @@
 
     function extractUserId(urlStr) {
         if (!urlStr) return null;
-        const match = urlStr.match(/(?:XID|userID|NID|ID|step=profile&user=|=)(\d+)/i);
+        const match = urlStr.match(/(?:XID|userID|NID|ID|step=profile&user=|user=|=)(\d+)/i);
         return match ? String(match[1]).trim() : null;
     }
 
@@ -70,7 +70,7 @@
         return false;
     }
 
-    // --- HARDENED FETCH DATA FROM GOOGLE SHEETS ---
+    // --- FETCH DATA FROM GOOGLE SHEETS ---
     function syncGlobalData(callback) {
         if (!GOOGLE_SCRIPT_URL) return;
 
@@ -81,7 +81,7 @@
             followRedirects: true,
             onload: function (response) {
                 if (response.responseText.trim().startsWith('<')) {
-                    console.warn('[TRPT] Received HTML response instead of JSON. Verify Google Script access is set to "Anyone".');
+                    console.warn('[TRPT] Received HTML response instead of JSON.');
                     return;
                 }
 
@@ -93,11 +93,8 @@
                         if (typeof callback === 'function') callback();
                     }
                 } catch (e) {
-                    console.error('[TRPT] Sync Parse Error (Skipped bad response):', e);
+                    console.error('[TRPT] Sync Parse Error:', e);
                 }
-            },
-            onerror: function(err) {
-                console.error('[TRPT] Network Request Failed:', err);
             }
         });
     }
@@ -112,13 +109,13 @@
             headers: { "Content-Type": "application/json" },
             data: JSON.stringify(reviveData),
             onload: function(response) {
-                console.log('[TRPT] Logged/Updated successfully:', response.responseText);
+                console.log('[TRPT] Logged to sheet:', response.responseText);
                 syncGlobalData();
             }
         });
     };
 
-    // --- FAST FETCH 24H REVIVES FROM TORN API ---
+    // --- FETCH 24H REVIVES FROM TORN API ---
     function fetchPast24HourRevives() {
         if (isFetchingRevives) return;
         const apiKey = ensureApiKey();
@@ -150,14 +147,14 @@
                                 timestamp: new Date(r.timestamp * 1000).toISOString(),
                                 reviveId: String(reviveId),
                                 reviverName: r.reviver_name || 'Unknown',
-                                targetId: String(r.target_id),
+                                targetId: String(r.target_id || r.target_userID || ''),
                                 targetName: r.target_name || 'Unknown',
                                 paid: Boolean(r.paid)
                             });
                         }
                     });
                 } catch (e) {
-                    console.error('[TRPT] 24h Revive Fetch Error:', e);
+                    console.error('[TRPT] Revive Fetch Error:', e);
                 }
             },
             onerror: function() {
@@ -186,7 +183,7 @@
                         const eventText = event.event || '';
 
                         if (eventText.includes('received') || eventText.includes('sent you') || eventText.includes('money')) {
-                            const senderIdMatch = eventText.match(/XID=(\d+)/i) || eventText.match(/profiles\.php\?XID=(\d+)/i);
+                            const senderIdMatch = eventText.match(/XID=(\d+)/i) || eventText.match(/profiles\.php\?XID=(\d+)/i) || eventText.match(/user=(\d+)/i);
                             if (!senderIdMatch) return;
 
                             const senderId = String(senderIdMatch[1]).trim();
@@ -290,50 +287,47 @@
         }
     }
 
-    // --- REFINED BADGE INJECTION LOGIC ---
+    // --- TARGETED BADGE INJECTION ---
     function injectReputationBadges() {
         if (!Array.isArray(sharedRevivesCache) || sharedRevivesCache.length === 0) return;
 
-        // 1. Full Profile Page Main Header
+        // 1. Full Profile Page Header
         if (window.location.href.includes('profiles.php')) {
             const currentId = extractUserId(window.location.href);
             if (currentId) {
                 const mainHeader = document.querySelector('.profile-wrapper .title-container, .user-information .heading, h2.title');
-                if (mainHeader) {
-                    applyBadgeToElement(mainHeader, currentId);
-                }
+                if (mainHeader) applyBadgeToElement(mainHeader, currentId);
             }
         }
 
-        // 2. Desktop Mini Profile Popups
-        const miniProfiles = document.querySelectorAll('#mini-profile-wrapper, [class*="miniProfileContainer"], [class*="miniProfileWrapper"]');
+        // 2. Profile Popups / Mini Profiles (Fixed to hit mini profile card containers)
+        const miniProfiles = document.querySelectorAll('#mini-profile-wrapper, [class*="miniProfileWrapper"], [class*="profile-container"], [class*="user-profile"]');
         miniProfiles.forEach(mini => {
-            const profileLink = mini.querySelector('a[href*="profiles.php"]');
+            const profileLink = mini.querySelector('a[href*="profiles.php"], a[href*="XID="]');
             if (profileLink) {
                 const targetId = extractUserId(profileLink.getAttribute('href'));
-                const nameContainer = mini.querySelector('.name, [class*="name"], .user-name, h4') || profileLink;
+                const nameContainer = mini.querySelector('[class*="name"], .user-name, .name, h4, .title') || profileLink;
                 if (targetId && nameContainer) {
                     applyBadgeToElement(nameContainer, targetId);
                 }
             }
         });
 
-        // 3. Header Search Bar Dropdown Results
-        const searchItems = document.querySelectorAll('#search-autocomplete-list li, [class*="searchResult"] li, .search-results-wrapper a[href*="profiles.php"], ul[class*="results"] a[href*="profiles.php"]');
+        // 3. Search Bar Results
+        const searchItems = document.querySelectorAll('#search-autocomplete-list li, [class*="searchResult"] li, .search-results-wrapper a, #header-root [class*="results"] a');
         searchItems.forEach(item => {
-            const link = item.tagName === 'A' ? item : item.querySelector('a[href*="profiles.php"]');
+            const link = item.tagName === 'A' ? item : item.querySelector('a');
             if (link) {
                 const targetId = extractUserId(link.getAttribute('href'));
-                const textWrapper = link.querySelector('.name, [class*="name"], span') || link;
+                const textWrapper = link.querySelector('[class*="name"], span') || link;
                 if (targetId && textWrapper) {
                     applyBadgeToElement(textWrapper, targetId);
                 }
             }
         });
 
-        // 4. Standard Text Links Across Main Content Tables & Lists
-        const profileLinks = document.querySelectorAll('a[href*="profiles.php?XID="], a[href*="XID="]');
-
+        // 4. Hospital List & General Page Profile Links
+        const profileLinks = document.querySelectorAll('a[href*="profiles.php"], a[href*="XID="]');
         profileLinks.forEach(link => {
             if (
                 link.closest('#sidebarroot, #chatRoot, .user-menu, .action-images, .medals-container') ||
@@ -362,9 +356,8 @@
     });
     observer.observe(document.body, { childList: true, subtree: true });
 
-    // Polling schedules
-    setInterval(syncGlobalData, 15000);          // 15s Sheet cache sync
-    setInterval(fetchPast24HourRevives, 60000);   // 60s Revive API fetch
-    setInterval(checkIncomingPayments, 60000);    // 60s Event payment check
+    setInterval(syncGlobalData, 15000);
+    setInterval(fetchPast24HourRevives, 30000);
+    setInterval(checkIncomingPayments, 60000);
 
 })();
