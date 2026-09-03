@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Revive Payment Tracker (Faction Shared)
 // @namespace    https://torn.com/
-// @version      3.4.6
+// @version      3.4.7
 // @description  Track revive payments globally across your faction using Google Sheets backend & auto payment matching.
 // @author       You
 // @match        https://www.torn.com/*
@@ -78,12 +78,11 @@
                     const data = JSON.parse(response.responseText);
                     if (Array.isArray(data)) {
                         sharedRevivesCache = data;
-                        console.log('[TRPT] Cache updated:', sharedRevivesCache.length, 'records');
                         injectReputationBadges();
                         if (typeof callback === 'function') callback();
                     }
                 } catch (e) {
-                    console.error('[TRPT] Google Sheet Sync Failed:', e);
+                    console.error('[TRPT] Sync Error:', e);
                 }
             }
         });
@@ -160,9 +159,12 @@
         });
     };
 
-    function createBadgeElement(isPaid, targetId) {
+    function createBadgeElement(isPaid, targetId, isNoRecord = false) {
         const badge = document.createElement('span');
         badge.className = 'trpt-badge';
+        const color = isNoRecord ? '#6c757d' : (isPaid ? '#28a745' : '#dc3545');
+        const label = isNoRecord ? 'NO RECORD' : (isPaid ? 'PAID' : 'UNPAID');
+
         badge.style.cssText = `
             font-size: 11px !important;
             padding: 2px 6px !important;
@@ -173,11 +175,11 @@
             display: inline-block !important;
             vertical-align: middle !important;
             cursor: pointer !important;
-            background-color: ${isPaid ? '#28a745' : '#dc3545'} !important;
+            background-color: ${color} !important;
             box-shadow: 0 1px 2px rgba(0,0,0,0.3) !important;
             z-index: 99999 !important;
         `;
-        badge.textContent = isPaid ? 'PAID' : 'UNPAID';
+        badge.textContent = label;
         badge.title = 'Click to toggle status';
 
         badge.addEventListener('click', (e) => {
@@ -189,47 +191,63 @@
         return badge;
     }
 
-    function applyBadgeToElement(targetContainer, targetId) {
+    function applyBadgeToElement(targetContainer, targetId, allowNoRecordFallback = false) {
         if (!targetContainer || !targetId) return;
 
         const normalizedTargetId = String(targetId).trim();
         const history = sharedRevivesCache.filter(r => String(r.targetId || r.target_id || '').trim() === normalizedTargetId);
         const existingBadge = targetContainer.querySelector('.trpt-badge');
 
-        const isPaid = history.length > 0 ? history.some(r => isRevivePaid(r)) : false;
-        const expectedText = history.length === 0 ? 'NO RECORD' : (isPaid ? 'PAID' : 'UNPAID');
-        const badgeColor = history.length === 0 ? '#6c757d' : (isPaid ? '#28a745' : '#dc3545');
+        if (history.length > 0) {
+            const isPaid = history.some(r => isRevivePaid(r));
+            const expectedText = isPaid ? 'PAID' : 'UNPAID';
+            const expectedColor = isPaid ? '#28a745' : '#dc3545';
 
-        if (existingBadge) {
-            if (existingBadge.textContent !== expectedText) {
-                existingBadge.textContent = expectedText;
-                existingBadge.style.backgroundColor = badgeColor;
+            if (existingBadge) {
+                if (existingBadge.textContent !== expectedText) {
+                    existingBadge.textContent = expectedText;
+                    existingBadge.style.backgroundColor = expectedColor;
+                }
+            } else {
+                targetContainer.appendChild(createBadgeElement(isPaid, normalizedTargetId, false));
             }
-        } else {
-            const badge = createBadgeElement(isPaid, normalizedTargetId);
-            badge.textContent = expectedText;
-            badge.style.backgroundColor = badgeColor;
-            targetContainer.appendChild(badge);
+        } else if (allowNoRecordFallback) {
+            if (!existingBadge) {
+                targetContainer.appendChild(createBadgeElement(false, normalizedTargetId, true));
+            }
+        } else if (existingBadge) {
+            existingBadge.remove();
         }
     }
 
     function injectReputationBadges() {
-        // 1. Target Profile Page Header
+        // 1. Target Profile Page Header (Allow 'NO RECORD' fallback)
         if (window.location.href.includes('profiles.php')) {
             const currentProfileId = extractUserId(window.location.href);
-            const profileHeader = document.querySelector('.user-information .title-container, .profile-header .name, .profile-container .user-name');
+            const profileHeader = document.querySelector('.user-information .title-container, .profile-header .name, .profile-container .user-name, h2.title');
             if (currentProfileId && profileHeader) {
-                applyBadgeToElement(profileHeader, currentProfileId);
+                applyBadgeToElement(profileHeader, currentProfileId, true);
             }
         }
 
-        // 2. Profile Links & Mini Profiles across site
+        // 2. Mini Profile Box (Allow 'NO RECORD' fallback)
+        const miniProfiles = document.querySelectorAll('#mini-profile-wrapper, [class*="miniProfileWrapper"], [class*="profile-container"], .mini-profile');
+        miniProfiles.forEach(mini => {
+            const profileLink = mini.querySelector('a[href*="profiles.php"], a[href*="XID="]');
+            if (profileLink) {
+                const targetId = extractUserId(profileLink.getAttribute('href'));
+                const nameContainer = mini.querySelector('[class*="name"], .user-name, h4, .title') || profileLink;
+                if (targetId && nameContainer) applyBadgeToElement(nameContainer, targetId, true);
+            }
+        });
+
+        // 3. General Links across site (ONLY show PAID / UNPAID if record exists)
         const profileLinks = document.querySelectorAll('a[href*="profiles.php?XID="], a[href*="step=profile"]');
         profileLinks.forEach(link => {
-            if (link.closest('#sidebarroot, #chatRoot')) return;
+            if (link.closest('#sidebarroot, #chatRoot, .trpt-badge')) return;
             const targetId = extractUserId(link.getAttribute('href'));
             if (targetId && link.textContent.trim().length > 0) {
-                applyBadgeToElement(link, targetId);
+                applyBadgeToElement(link, targetId, false);
             }
         });
     }
