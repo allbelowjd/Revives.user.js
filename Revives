@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Revive Payment Tracker (Faction Shared)
 // @namespace    https://torn.com/
-// @version      3.4.4
+// @version      3.4.5
 // @description  Track revive payments globally across your faction using Google Sheets backend & auto payment matching.
 // @author       You
 // @match        https://www.torn.com/*
@@ -85,7 +85,7 @@
                         if (typeof callback === 'function') callback();
                     }
                 } catch (e) {
-                    console.error('[TRPT] Google Sheet Sync Failed. Verify Web App Deployment is set to "Anyone":', e);
+                    console.error('[TRPT] Google Sheet Sync Failed:', e);
                 }
             }
         });
@@ -94,7 +94,7 @@
     // --- LOG TO GOOGLE SHEETS ---
     window.logReviveToSheet = function(reviveData) {
         if (!GOOGLE_SCRIPT_URL) return;
-        console.log('[TRPT] Sending payload to Sheet:', reviveData);
+        console.log('[TRPT] Logging to Sheet:', reviveData);
 
         GM_xmlhttpRequest({
             method: 'POST',
@@ -102,11 +102,8 @@
             headers: { "Content-Type": "application/json" },
             data: JSON.stringify(reviveData),
             onload: function(response) {
-                console.log('[TRPT] Logged response:', response.responseText);
+                console.log('[TRPT] Sheet response:', response.responseText);
                 syncGlobalData();
-            },
-            onerror: function(err) {
-                console.error('[TRPT] POST Request failed:', err);
             }
         });
     };
@@ -128,15 +125,7 @@
                 isFetchingRevives = false;
                 try {
                     const data = JSON.parse(response.responseText);
-                    if (data.error) {
-                        console.error('[TRPT] Torn API Error Code:', data.error.code, data.error.error);
-                        return;
-                    }
-
-                    if (!data.revives || Object.keys(data.revives).length === 0) {
-                        console.warn('[TRPT] No revives returned from Torn API in past 24h.');
-                        return;
-                    }
+                    if (data.error || !data.revives) return;
 
                     Object.keys(data.revives).forEach(reviveId => {
                         const r = data.revives[reviveId];
@@ -163,46 +152,50 @@
         });
     }
 
-    // --- DIRECT DOM REVIVE CATCHER (ON-SCREEN SUCCESS DETECTOR) ---
-    function scanHospitalDOMForReviveSuccess() {
-        const successMsg = document.querySelector('.msg.success, [class*="success"]');
-        if (successMsg && successMsg.textContent.includes('revived')) {
-            const profileLink = successMsg.querySelector('a[href*="profiles.php"]');
-            if (profileLink) {
-                const targetId = extractUserId(profileLink.getAttribute('href'));
-                const targetName = profileLink.textContent.trim();
-                const tempReviveId = 'local_' + Date.now();
-
-                const existing = sharedRevivesCache.find(r => String(r.targetId).trim() === String(targetId).trim());
-                if (!existing) {
-                    console.log('[TRPT] Captured direct on-screen revive for ID:', targetId);
-                    window.logReviveToSheet({
-                        timestamp: new Date().toISOString(),
-                        reviveId: tempReviveId,
-                        reviverName: 'You',
-                        targetId: targetId,
-                        targetName: targetName,
-                        paid: false
-                    });
-                }
+    // --- REAL-TIME REVIVE AJAX INTERCEPTOR ---
+    const originalOpen = XMLHttpRequest.prototype.open;
+    XMLHttpRequest.prototype.open = function (method, url) {
+        this.addEventListener('load', function () {
+            if (url.includes('hospital.php') || url.includes('action=revive')) {
+                try {
+                    const res = JSON.parse(this.responseText);
+                    if (res && (res.success || res.text?.includes('revived'))) {
+                        const targetId = extractUserId(url) || extractUserId(window.location.href);
+                        if (targetId) {
+                            console.log('[TRPT] Instant AJAX Revive Captured for Target:', targetId);
+                            window.logReviveToSheet({
+                                timestamp: new Date().toISOString(),
+                                reviveId: 'instant_' + Date.now(),
+                                reviverName: 'You',
+                                targetId: String(targetId),
+                                targetName: 'Unknown',
+                                paid: false
+                            });
+                        }
+                    }
+                } catch (e) {}
             }
-        }
-    }
+        });
+        originalOpen.apply(this, arguments);
+    };
 
     // --- MANUAL TOGGLE ---
     window.togglePaymentStatus = function(targetId) {
         const history = sharedRevivesCache.filter(r => String(r.targetId || r.target_id || '').trim() === String(targetId).trim());
-        if (history.length === 0) return;
+        
+        let latest = history[history.length - 1];
+        let newPaidStatus = true;
 
-        const latest = history[history.length - 1];
-        const newPaidStatus = !isRevivePaid(latest);
+        if (latest) {
+            newPaidStatus = !isRevivePaid(latest);
+        }
 
         window.logReviveToSheet({
-            timestamp: latest.timestamp || new Date().toISOString(),
-            reviveId: String(latest.reviveId || latest.revive_id),
-            reviverName: latest.reviverName || 'Unknown',
-            targetId: String(latest.targetId),
-            targetName: latest.targetName || 'Unknown',
+            timestamp: latest?.timestamp || new Date().toISOString(),
+            reviveId: String(latest?.reviveId || 'manual_' + Date.now()),
+            reviverName: latest?.reviverName || 'You',
+            targetId: String(targetId),
+            targetName: latest?.targetName || 'Manual Entry',
             paid: newPaidStatus
         });
     };
@@ -226,7 +219,7 @@
             z-index: 99999;
         `;
         badge.textContent = isPaid ? 'PAID' : 'UNPAID';
-        badge.title = 'Click to toggle payment status';
+        badge.title = 'Click to toggle status';
 
         badge.addEventListener('click', (e) => {
             e.preventDefault();
@@ -261,11 +254,10 @@
 
     // --- TARGETED BADGE INJECTION ---
     function injectReputationBadges() {
-        scanHospitalDOMForReviveSuccess();
-        if (!Array.isArray(sharedRevivesCache) || sharedRevivesCache.length === 0) return;
+        if (!Array.isArray(sharedRevivesCache)) return;
 
-        // Mini Profile Box targeting
-        const miniProfiles = document.querySelectorAll('#mini-profile-wrapper, [class*="miniProfileWrapper"], [class*="profile-container"], [class*="user-profile"], .mini-profile');
+        // 1. Mini Profile Box
+        const miniProfiles = document.querySelectorAll('#mini-profile-wrapper, [class*="miniProfileWrapper"], [class*="profile-container"], .mini-profile');
         miniProfiles.forEach(mini => {
             const profileLink = mini.querySelector('a[href*="profiles.php"], a[href*="XID="]');
             if (profileLink) {
@@ -275,7 +267,7 @@
             }
         });
 
-        // Hospital Table Rows targeting
+        // 2. Profile & List links
         const profileLinks = document.querySelectorAll('a[href*="profiles.php"], a[href*="XID="]');
         profileLinks.forEach(link => {
             if (link.closest('#sidebarroot, #chatRoot, .user-menu') || link.textContent.trim() === '') return;
