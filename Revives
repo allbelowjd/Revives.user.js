@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Revive Payment Tracker (Faction Shared)
 // @namespace    https://torn.com/
-// @version      3.5.3
+// @version      3.6.0
 // @description  Track revive payments globally across your faction using Google Sheets backend & auto payment matching.
 // @author       You
 // @match        https://www.torn.com/*
@@ -21,27 +21,32 @@
     'use strict';
 
     const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwrGdxSIxZupwZddypRhLTVYinjsRZ9ALT1FP5ad4ILLKfj-HsObFkWJZ1ch2Ydd5SR/exec";
-    const STORAGE_KEY_APIKEY = 'trpt_api_key';
+    const STORAGE_KEY_APIKEY = 'trpt_api_keys';
     let sharedRevivesCache = [];
     let isFetchingRevives = false;
     let isInjecting = false;
 
+    // Get API Key with Multi-Key Rotation Support
     function getApiKey() {
-        return GM_getValue(STORAGE_KEY_APIKEY, '');
+        const raw = GM_getValue(STORAGE_KEY_APIKEY, '');
+        if (!raw) return '';
+        const keys = raw.split(',').map(k => k.trim()).filter(Boolean);
+        if (keys.length === 0) return '';
+        return keys[Math.floor(Math.random() * keys.length)];
     }
 
     function promptForApiKey() {
-        const currentKey = getApiKey();
-        const newKey = prompt('[TRPT] Enter your Torn API Key:', currentKey);
-        if (newKey !== null) {
-            GM_setValue(STORAGE_KEY_APIKEY, newKey.trim());
-            alert('[TRPT] API Key updated!');
+        const currentKeys = GM_getValue(STORAGE_KEY_APIKEY, '');
+        const newKeys = prompt('[TRPT] Enter Torn API Key(s), separated by commas if using multiple:', currentKeys);
+        if (newKeys !== null) {
+            GM_setValue(STORAGE_KEY_APIKEY, newKeys.trim());
+            alert('[TRPT] API Key(s) updated!');
             fetchPast24HourRevives();
         }
     }
 
     if (typeof GM_registerMenuCommand !== 'undefined') {
-        GM_registerMenuCommand("Set/Update Torn API Key", promptForApiKey);
+        GM_registerMenuCommand("Set/Update Torn API Key(s)", promptForApiKey);
     }
 
     function ensureApiKey() {
@@ -80,7 +85,7 @@
                     const data = JSON.parse(response.responseText);
                     if (Array.isArray(data)) {
                         sharedRevivesCache = data;
-                        console.log('[TRPT] Cache updated:', sharedRevivesCache.length, 'records.');
+                        console.log('[TRPT] Global cache updated:', sharedRevivesCache.length, 'records.');
                         injectReputationBadges();
                         if (typeof callback === 'function') callback();
                     }
@@ -99,7 +104,6 @@
             headers: { "Content-Type": "application/json" },
             data: JSON.stringify(reviveData),
             onload: function() {
-                // Short delay to allow Google Sheets Apps Script trigger execution
                 setTimeout(() => {
                     syncGlobalData(callback);
                 }, 1000);
@@ -156,7 +160,6 @@
 
         let newPaidStatus = latest ? !isRevivePaid(latest) : true;
 
-        // Optimistically update local cache first for instant feedback
         if (latest) {
             latest.paid = newPaidStatus;
             injectReputationBadges();
@@ -193,7 +196,7 @@
             z-index: 99999 !important;
         `;
         badge.textContent = label;
-        badge.title = 'Click to toggle status';
+        badge.title = 'Click to toggle payment status';
 
         badge.addEventListener('click', (e) => {
             e.preventDefault();
@@ -234,40 +237,27 @@
         isInjecting = true;
 
         try {
-            // Profile Headers
+            // Target profile headers specifically
             if (window.location.href.includes('profiles.php')) {
                 const currentProfileId = extractUserId(window.location.href);
                 const profileHeader = document.querySelector(`
                     .user-information .title-container, 
                     .profile-header .name, 
-                    .profile-container .user-name,
-                    .profile-header-wrapper [class*="name"],
-                    div[class*="user-information"] [class*="title"],
-                    .basic-information .name
+                    .profile-container .user-name
                 `);
                 if (currentProfileId && profileHeader) {
                     applyBadgeToElement(profileHeader, currentProfileId);
                 }
             }
 
-            // Mini Profile Boxes
-            const miniProfiles = document.querySelectorAll('#mini-profile-wrapper, [class*="miniProfileWrapper"], [class*="profile-container"], .mini-profile');
+            // Target mini profiles
+            const miniProfiles = document.querySelectorAll('#mini-profile-wrapper, [class*="miniProfileWrapper"]');
             miniProfiles.forEach(mini => {
                 const profileLink = mini.querySelector('a[href*="profiles.php"], a[href*="XID="]');
                 if (profileLink) {
                     const targetId = extractUserId(profileLink.getAttribute('href'));
-                    const nameContainer = mini.querySelector('[class*="name"], .user-name, h4, .title') || profileLink;
+                    const nameContainer = mini.querySelector('[class*="name"], .user-name') || profileLink;
                     if (targetId && nameContainer) applyBadgeToElement(nameContainer, targetId);
-                }
-            });
-
-            // General Profile Links Across Tables/Lists
-            const profileLinks = document.querySelectorAll('a[href*="profiles.php?XID="], a[href*="step=profile"]');
-            profileLinks.forEach(link => {
-                if (link.closest('#sidebarroot, #chatRoot') || link.querySelector('.trpt-badge')) return;
-                const targetId = extractUserId(link.getAttribute('href'));
-                if (targetId && link.textContent.trim().length > 0) {
-                    applyBadgeToElement(link, targetId);
                 }
             });
         } finally {
@@ -275,27 +265,22 @@
         }
     }
 
-    window.TRPT = {
-        fetchRevives: fetchPast24HourRevives,
-        syncSheets: syncGlobalData,
-        getCache: () => sharedRevivesCache,
-        injectNow: injectReputationBadges
-    };
-
-    // Initialize
+    // Initialize Global App State
     syncGlobalData(function() {
         ensureApiKey();
         fetchPast24HourRevives();
     });
 
+    // Efficient Mutation Observer (scoped execution to reduce CPU lag)
     let debouncedTimer = null;
     const observer = new MutationObserver(() => {
         if (debouncedTimer) clearTimeout(debouncedTimer);
-        debouncedTimer = setTimeout(injectReputationBadges, 300);
+        debouncedTimer = setTimeout(injectReputationBadges, 400);
     });
 
     observer.observe(document.body, { childList: true, subtree: true });
 
+    // Global background sync timers
     setInterval(syncGlobalData, 30000);
     setInterval(fetchPast24HourRevives, 60000);
 
