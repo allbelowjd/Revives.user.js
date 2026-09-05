@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Revive Payment Tracker (Faction Shared)
 // @namespace    https://torn.com/
-// @version      3.6.7
+// @version      3.6.8
 // @description  Track revive payments globally across your faction using Google Sheets backend & auto payment matching.
 // @author       You
 // @match        https://www.torn.com/*
@@ -36,14 +36,14 @@
             border-radius: 3px !important;
             font-weight: bold !important;
             color: #ffffff !important;
-            display: inline-block !important;
-            vertical-align: middle !important;
+            display: inline-flex !important;
+            align-items: center !important;
+            justify-content: center !important;
             cursor: pointer !important;
             box-shadow: 0 1px 2px rgba(0,0,0,0.3) !important;
             z-index: 99999 !important;
-            flex-shrink: 0 !important;
             white-space: nowrap !important;
-            line-height: 1.2 !important;
+            height: 18px !important;
         }
         .trpt-badge.paid { background-color: #28a745 !important; }
         .trpt-badge.unpaid { background-color: #dc3545 !important; }
@@ -190,9 +190,7 @@
                             });
                         }
                     });
-                } catch (e) {
-                    console.error('[TRPT] Revive Parse Error:', e);
-                }
+                } catch (e) {}
             },
             onerror: function() { isFetchingRevives = false; }
         });
@@ -222,6 +220,7 @@
     function createBadgeElement(isPaid, targetId) {
         const badge = document.createElement('span');
         badge.className = `trpt-badge ${isPaid ? 'paid' : 'unpaid'}`;
+        badge.dataset.trptTarget = targetId; 
         badge.textContent = isPaid ? 'PAID' : 'UNPAID';
         badge.title = 'Click to toggle status';
 
@@ -234,18 +233,15 @@
         return badge;
     }
 
-    // New targeted injection handler for exact placement
+    // Safer, error-resistant injection function (より安全でエラーに強いインジェクション関数)
     function applyBadgeToElement(targetElement, targetId, placement = 'after') {
-        if (!targetElement || !targetId) return;
+        if (!targetElement || !targetElement.parentNode || !targetId) return;
 
         const normalizedTargetId = String(targetId).trim();
         const history = sharedRevivesCache.filter(r => String(r.targetId || r.target_id || '').trim() === normalizedTargetId);
         
-        // Find existing badge either inside the container or right next to it
-        let existingBadge = targetElement.querySelector(':scope > .trpt-badge');
-        if (!existingBadge && targetElement.nextSibling && targetElement.nextSibling.classList && targetElement.nextSibling.classList.contains('trpt-badge')) {
-            existingBadge = targetElement.nextSibling;
-        }
+        // Find existing badge using the custom dataset attribute
+        let existingBadge = targetElement.parentNode.querySelector(`.trpt-badge[data-trpt-target="${normalizedTargetId}"]`);
 
         if (history.length > 0) {
             const isPaid = history.some(r => isRevivePaid(r));
@@ -263,7 +259,9 @@
                 if (placement === 'append') {
                     targetElement.appendChild(newBadge);
                 } else if (placement === 'after') {
-                    targetElement.insertAdjacentElement('afterend', newBadge);
+                    targetElement.parentNode.insertBefore(newBadge, targetElement.nextSibling);
+                } else if (placement === 'before') {
+                    targetElement.parentNode.insertBefore(newBadge, targetElement);
                 }
             }
         } else if (existingBadge) {
@@ -276,55 +274,46 @@
         isInjecting = true;
 
         try {
-            // Target 1: Profile Header (Image Circle 1)
+            // Target 1: Profile Header - Next to ID (メインプロフィールのヘッダー)
             if (window.location.href.includes('profiles.php')) {
                 const currentProfileId = extractUserId(window.location.href);
-                const profileHeader = document.querySelector('.profile-right-wrapper .name.bottom-round, .profile-wrapper .user-information .title-container, .profile-header-wrapper [class*="name"]');
-                if (currentProfileId && profileHeader) {
-                    applyBadgeToElement(profileHeader, currentProfileId, 'append');
+                const headerTitle = document.querySelector('.user-information .title-container, .profile-right-wrapper [class*="name"]');
+                if (currentProfileId && headerTitle) {
+                    applyBadgeToElement(headerTitle, currentProfileId, 'append');
                 }
             }
 
-            // Target 2: Success Notification Banners (Image Circle 2)
-            const successMessages = document.querySelectorAll('.msg-info-wrap, .info-msg-cont, [class*="message-container"]');
-            successMessages.forEach(msg => {
-                const link = msg.querySelector('a[href*="profiles.php"], a[href*="XID="]');
-                if (link && !link.classList.contains('trpt-processed-msg')) {
-                    link.classList.add('trpt-processed-msg');
-                    const targetId = extractUserId(link.getAttribute('href'));
-                    if (targetId) applyBadgeToElement(link, targetId, 'after');
-                }
+            // Target 2: Success Notification Banner - Next to linked name (成功メッセージのリンクの横)
+            document.querySelectorAll('.info-msg-cont a[href*="profiles.php"], .msg-info-wrap a[href*="profiles.php"]').forEach(link => {
+                const targetId = extractUserId(link.getAttribute('href'));
+                if (targetId) applyBadgeToElement(link, targetId, 'after');
             });
 
-            // Target 3: Mini Profile Bottom Action Bar (Image Circle 3)
-            const miniProfiles = document.querySelectorAll('[class*="miniProfile"], [class*="profile-container"], [class*="userCard"], [class*="profilePopup"]');
-            miniProfiles.forEach(mini => {
-                const viewProfileLink = Array.from(mini.querySelectorAll('a')).find(a => a.textContent.trim() === 'View profile' || (a.href && a.href.includes('profiles.php') && !a.className.includes('name')));
-                if (viewProfileLink && viewProfileLink.parentNode) {
-                    const targetWrapper = viewProfileLink.parentNode;
-                    if (!targetWrapper.classList.contains('trpt-processed-mini')) {
-                        targetWrapper.classList.add('trpt-processed-mini');
-                        const targetId = extractUserId(viewProfileLink.getAttribute('href'));
-                        if (targetId) applyBadgeToElement(targetWrapper, targetId, 'append');
-                    }
-                }
-            });
-
-            // General catch-all for logs, hospital, and lists (Fallback)
-            const contentArea = document.querySelector('.content-wrapper') || document.body;
-            const generalLinks = contentArea.querySelectorAll('a[href*="profiles.php?XID="]:not(.trpt-processed-gen), a[href*="step=profile"]:not(.trpt-processed-gen), a[href*="user.php?id="]:not(.trpt-processed-gen)');
-            generalLinks.forEach(link => {
-                link.classList.add('trpt-processed-gen');
+            // Target 3: Mini Profile Bottom Action Bar - Right of the icons (ミニプロフィールのアイコンの右側)
+            document.querySelectorAll('[class*="miniProfile"], .profile-container, .userCard').forEach(mini => {
+                const actionLinks = mini.querySelector('.profile-buttons, .user-info-bottom, [class*="actions"]');
+                const profileLink = mini.querySelector('a[href*="profiles.php"]');
                 
-                // Skip if handled by specific targets above
-                if (link.closest('#sidebarroot, #chatRoot, .msg-info-wrap, .info-msg-cont, [class*="miniProfile"], [class*="userCard"]')) return;
+                if (actionLinks && profileLink) {
+                    const targetId = extractUserId(profileLink.getAttribute('href'));
+                    if (targetId) applyBadgeToElement(actionLinks, targetId, 'append');
+                }
+            });
+
+            // General Fallback for all other profile links (Hospital, Logs, etc.) (その他のリスト用のフォールバック)
+            const contentArea = document.querySelector('.content-wrapper') || document.body;
+            contentArea.querySelectorAll('a[href*="profiles.php?XID="], a[href*="step=profile"]').forEach(link => {
+                // Skip if it's already inside a known structured container handled above
+                if (link.closest('.user-information, .info-msg-cont, .msg-info-wrap, [class*="miniProfile"], .profile-container, #chatRoot')) return;
                 
                 const targetId = extractUserId(link.getAttribute('href'));
-                if (targetId && link.textContent.trim().length > 0) {
+                if (targetId && link.textContent.trim().length > 1) {
                     applyBadgeToElement(link, targetId, 'after');
                 }
             });
 
+        } catch (error) {
+            console.error("[TRPT] Error injecting badges:", error);
         } finally {
             isInjecting = false;
         }
