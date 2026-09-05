@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Revive Payment Tracker (Faction Shared)
 // @namespace    https://torn.com/
-// @version      3.6.4
+// @version      3.6.6
 // @description  Track revive payments globally across your faction using Google Sheets backend & auto payment matching.
 // @author       You
 // @match        https://www.torn.com/*
@@ -241,7 +241,6 @@
     function applyBadgeToElement(targetContainer, targetId) {
         if (!targetContainer || !targetId) return;
 
-        // Skip containers that host quick action buttons (Message, Trade, Attack) to prevent overlap bugs under TornTools
         if (targetContainer.querySelector('a[href*="send_message"], a[href*="trade.php"], a[href*="attacks.php"]') ||
             targetContainer.closest('.user-actions, .profile-buttons, [class*="actions"]')) {
             return;
@@ -276,7 +275,7 @@
         }
     }
 
-    // Scoped DOM injection with processing markers to optimize performance
+    // Scoped DOM injection supporting hospital tables, logs, and general user entries
     function injectReputationBadges() {
         if (isInjecting) return;
         isInjecting = true;
@@ -297,7 +296,7 @@
                 }
             }
 
-            const miniProfiles = document.querySelectorAll('#mini-profile-wrapper, [class*="miniProfileWrapper"], [class*="profile-container"], .mini-profile');
+            const miniProfiles = document.querySelectorAll('[class*="miniProfile"], [class*="profile-container"], [class*="userCard"], [class*="profilePopup"]');
             miniProfiles.forEach(mini => {
                 const profileLink = mini.querySelector('a[href*="profiles.php"], a[href*="XID="]');
                 if (profileLink) {
@@ -307,8 +306,9 @@
                 }
             });
 
+            // Expanded scan to include hospital lists, log items, and table rows
             const contentArea = document.querySelector('.content-wrapper') || document.body;
-            const profileLinks = contentArea.querySelectorAll('a[href*="profiles.php?XID="], a[href*="step=profile"]');
+            const profileLinks = contentArea.querySelectorAll('a[href*="profiles.php?XID="], a[href*="step=profile"], a[href*="user.php?id="]');
             profileLinks.forEach(link => {
                 if (link.classList.contains('trpt-processed')) return;
                 link.classList.add('trpt-processed');
