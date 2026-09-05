@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Revive Payment Tracker (Faction Shared)
 // @namespace    https://torn.com/
-// @version      3.6.1
+// @version      3.6.3
 // @description  Track revive payments globally across your faction using Google Sheets backend & auto payment matching.
 // @author       You
 // @match        https://www.torn.com/*
@@ -12,6 +12,7 @@
 // @grant        GM_setValue
 // @grant        GM_registerMenuCommand
 // @grant        GM_xmlhttpRequest
+// @grant        GM_addStyle
 // @connect      api.torn.com
 // @connect      script.google.com
 // @connect      script.googleusercontent.com
@@ -26,7 +27,37 @@
     let isFetchingRevives = false;
     let isInjecting = false;
 
-    // Get API Key with Multi-Key Rotation Support
+    // Bulletproof CSS Injection for Torn React, TornTools, & Message Button Protection
+    const badgeCSS = `
+        .trpt-badge {
+            font-size: 11px !important;
+            padding: 2px 6px !important;
+            margin-left: 6px !important;
+            margin-right: 6px !important;
+            border-radius: 3px !important;
+            font-weight: bold !important;
+            color: #ffffff !important;
+            display: inline-block !important;
+            vertical-align: middle !important;
+            cursor: pointer !important;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.3) !important;
+            z-index: 99999 !important;
+            flex-shrink: 0 !important;
+            white-space: nowrap !important;
+            line-height: 1.2 !important;
+        }
+        .trpt-badge.paid { background-color: #28a745 !important; }
+        .trpt-badge.unpaid { background-color: #dc3545 !important; }
+    `;
+
+    if (typeof GM_addStyle !== "undefined") {
+        GM_addStyle(badgeCSS);
+    } else {
+        const style = document.createElement("style");
+        style.textContent = badgeCSS;
+        document.head.appendChild(style);
+    }
+
     function getApiKey() {
         const raw = GM_getValue(STORAGE_KEY_APIKEY, '');
         if (!raw) return '';
@@ -73,8 +104,18 @@
         return false;
     }
 
+    // Cross-tab synchronized Google Sheets sync
     function syncGlobalData(callback) {
         if (!GOOGLE_SCRIPT_URL) return;
+
+        const lastSync = GM_getValue('trpt_last_gsheet_sync', 0);
+        if (Date.now() - lastSync < 25000) {
+            const localCache = GM_getValue('trpt_shared_cache');
+            if (localCache) sharedRevivesCache = JSON.parse(localCache);
+            if (typeof callback === 'function') callback();
+            return;
+        }
+        GM_setValue('trpt_last_gsheet_sync', Date.now());
 
         GM_xmlhttpRequest({
             method: 'GET',
@@ -85,6 +126,7 @@
                     const data = JSON.parse(response.responseText);
                     if (Array.isArray(data)) {
                         sharedRevivesCache = data;
+                        GM_setValue('trpt_shared_cache', JSON.stringify(data));
                         console.log('[TRPT] Cache updated:', sharedRevivesCache.length, 'records.');
                         injectReputationBadges();
                         if (typeof callback === 'function') callback();
@@ -96,7 +138,7 @@
         });
     }
 
-    window.logReviveToSheet = function(reviveData, callback) {
+    function logReviveToSheet(reviveData, callback) {
         if (!GOOGLE_SCRIPT_URL) return;
         GM_xmlhttpRequest({
             method: 'POST',
@@ -109,10 +151,16 @@
                 }, 1000);
             }
         });
-    };
+    }
 
+    // Cross-tab synchronized Torn API fetch to avoid multi-tab rate limits
     function fetchPast24HourRevives() {
         if (isFetchingRevives) return;
+
+        const lastFetch = GM_getValue('trpt_last_torn_fetch', 0);
+        if (Date.now() - lastFetch < 55000) return; 
+        GM_setValue('trpt_last_torn_fetch', Date.now());
+
         const apiKey = getApiKey();
         if (!apiKey) return;
 
@@ -136,7 +184,7 @@
                         );
 
                         if (!existing) {
-                            window.logReviveToSheet({
+                            logReviveToSheet({
                                 timestamp: new Date((r.timestamp || Math.floor(Date.now() / 1000)) * 1000).toISOString(),
                                 reviveId: String(reviveId),
                                 reviverName: r.reviver_name || r.reviver_username || 'Unknown',
@@ -154,7 +202,7 @@
         });
     }
 
-    window.togglePaymentStatus = function(targetId) {
+    function togglePaymentStatus(targetId) {
         const history = sharedRevivesCache.filter(r => String(r.targetId || r.target_id || '').trim() === String(targetId).trim());
         let latest = history[history.length - 1];
 
@@ -165,7 +213,7 @@
             injectReputationBadges();
         }
 
-        window.logReviveToSheet({
+        logReviveToSheet({
             timestamp: latest?.timestamp || new Date().toISOString(),
             reviveId: String(latest?.reviveId || `manual_${Date.now()}`),
             reviverName: latest?.reviverName || 'You',
@@ -173,35 +221,18 @@
             targetName: latest?.targetName || 'Manual Entry',
             paid: newPaidStatus
         });
-    };
+    }
 
     function createBadgeElement(isPaid, targetId) {
         const badge = document.createElement('span');
-        badge.className = 'trpt-badge';
-        const color = isPaid ? '#28a745' : '#dc3545';
-        const label = isPaid ? 'PAID' : 'UNPAID';
-
-        badge.style.cssText = `
-            font-size: 11px !important;
-            padding: 2px 6px !important;
-            margin-left: 6px !important;
-            border-radius: 3px !important;
-            font-weight: bold !important;
-            color: #ffffff !important;
-            display: inline-block !important;
-            vertical-align: middle !important;
-            cursor: pointer !important;
-            background-color: ${color} !important;
-            box-shadow: 0 1px 2px rgba(0,0,0,0.3) !important;
-            z-index: 99999 !important;
-        `;
-        badge.textContent = label;
+        badge.className = `trpt-badge ${isPaid ? 'paid' : 'unpaid'}`;
+        badge.textContent = isPaid ? 'PAID' : 'UNPAID';
         badge.title = 'Click to toggle status';
 
         badge.addEventListener('click', (e) => {
             e.preventDefault();
             e.stopPropagation();
-            if (targetId) window.togglePaymentStatus(targetId);
+            if (targetId) togglePaymentStatus(targetId);
         });
 
         return badge;
@@ -216,28 +247,37 @@
 
         if (history.length > 0) {
             const isPaid = history.some(r => isRevivePaid(r));
+            const expectedClass = isPaid ? 'trpt-badge paid' : 'trpt-badge unpaid';
             const expectedText = isPaid ? 'PAID' : 'UNPAID';
-            const expectedColor = isPaid ? '#28a745' : '#dc3545';
 
             if (existingBadge) {
-                if (existingBadge.textContent !== expectedText) {
+                if (existingBadge.className !== expectedClass) {
+                    existingBadge.className = expectedClass;
                     existingBadge.textContent = expectedText;
-                    existingBadge.style.backgroundColor = expectedColor;
                 }
             } else {
-                targetContainer.appendChild(createBadgeElement(isPaid, normalizedTargetId));
+                const newBadge = createBadgeElement(isPaid, normalizedTargetId);
+                
+                // Anchored injection right after the name element to protect action/message buttons from overlapping
+                const nameNode = targetContainer.querySelector('[class*="name"], .user-name, h4, .title') || targetContainer.firstChild;
+                
+                if (nameNode && nameNode.nextSibling) {
+                    targetContainer.insertBefore(newBadge, nameNode.nextSibling);
+                } else {
+                    targetContainer.appendChild(newBadge);
+                }
             }
         } else if (existingBadge) {
             existingBadge.remove();
         }
     }
 
+    // Scoped DOM injection with processing markers to optimize performance
     function injectReputationBadges() {
         if (isInjecting) return;
         isInjecting = true;
 
         try {
-            // 1. Profile Headers
             if (window.location.href.includes('profiles.php')) {
                 const currentProfileId = extractUserId(window.location.href);
                 const profileHeader = document.querySelector(`
@@ -253,7 +293,6 @@
                 }
             }
 
-            // 2. Mini Profile Boxes
             const miniProfiles = document.querySelectorAll('#mini-profile-wrapper, [class*="miniProfileWrapper"], [class*="profile-container"], .mini-profile');
             miniProfiles.forEach(mini => {
                 const profileLink = mini.querySelector('a[href*="profiles.php"], a[href*="XID="]');
@@ -264,9 +303,12 @@
                 }
             });
 
-            // 3. General Profile Links Across Tables / Lists
-            const profileLinks = document.querySelectorAll('a[href*="profiles.php?XID="], a[href*="step=profile"]');
+            const contentArea = document.querySelector('.content-wrapper') || document.body;
+            const profileLinks = contentArea.querySelectorAll('a[href*="profiles.php?XID="], a[href*="step=profile"]');
             profileLinks.forEach(link => {
+                if (link.classList.contains('trpt-processed')) return;
+                link.classList.add('trpt-processed');
+
                 if (link.closest('#sidebarroot, #chatRoot') || link.querySelector('.trpt-badge')) return;
                 const targetId = extractUserId(link.getAttribute('href'));
                 if (targetId && link.textContent.trim().length > 0) {
@@ -278,13 +320,11 @@
         }
     }
 
-    // Initialize
     syncGlobalData(function() {
         ensureApiKey();
         fetchPast24HourRevives();
     });
 
-    // Debounced Observer to prevent CPU spikes
     let debouncedTimer = null;
     const observer = new MutationObserver(() => {
         if (debouncedTimer) clearTimeout(debouncedTimer);
