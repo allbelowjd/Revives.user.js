@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Revive Payment Tracker (Faction Shared)
 // @namespace    https://torn.com/
-// @version      3.7.1
+// @version      3.8.0
 // @description  Track revive payments globally across your faction using Google Sheets backend & auto payment matching.
 // @author       You
 // @match        https://www.torn.com/*
@@ -46,7 +46,6 @@
         }
         .trpt-badge.paid { background-color: #28a745 !important; }
         .trpt-badge.unpaid { background-color: #dc3545 !important; }
-        .trpt-badge.untracked { background-color: #6c757d !important; }
     `;
 
     if (typeof GM_addStyle !== "undefined") {
@@ -203,14 +202,13 @@
         const normalizedTargetId = String(targetId).trim();
         const history = sharedRevivesCache.filter(r => String(r.targetId || r.target_id || '').trim() === normalizedTargetId);
         
-        let statusClass = 'untracked';
-        let statusText = 'UNTRACKED';
-        
+        let isPaid = false;
         if (history.length > 0) {
-            const isPaid = history.some(r => isRevivePaid(r));
-            statusClass = isPaid ? 'paid' : 'unpaid';
-            statusText = isPaid ? 'PAID' : 'UNPAID';
+            isPaid = history.some(r => isRevivePaid(r));
         }
+        
+        const statusClass = isPaid ? 'paid' : 'unpaid';
+        const statusText = isPaid ? 'PAID' : 'UNPAID';
 
         const badge = document.createElement('span');
         badge.className = `trpt-badge ${statusClass}`;
@@ -234,14 +232,13 @@
         let existingBadge = targetElement.parentNode.querySelector(`.trpt-badge[data-trpt-target="${normalizedTargetId}"]`);
         
         const history = sharedRevivesCache.filter(r => String(r.targetId || r.target_id || '').trim() === normalizedTargetId);
-        let statusClass = 'untracked';
-        let statusText = 'UNTRACKED';
-        
+        let isPaid = false;
         if (history.length > 0) {
-            const isPaid = history.some(r => isRevivePaid(r));
-            statusClass = isPaid ? 'trpt-badge paid' : 'trpt-badge unpaid';
-            statusText = isPaid ? 'PAID' : 'UNPAID';
+            isPaid = history.some(r => isRevivePaid(r));
         }
+
+        const statusClass = isPaid ? 'trpt-badge paid' : 'trpt-badge unpaid';
+        const statusText = isPaid ? 'PAID' : 'UNPAID';
 
         if (existingBadge) {
             existingBadge.className = `trpt-badge ${statusClass}`;
