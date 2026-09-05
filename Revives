@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Revive Payment Tracker (Faction Shared)
 // @namespace    https://torn.com/
-// @version      3.6.6
+// @version      3.6.7
 // @description  Track revive payments globally across your faction using Google Sheets backend & auto payment matching.
 // @author       You
 // @match        https://www.torn.com/*
@@ -27,7 +27,6 @@
     let isFetchingRevives = false;
     let isInjecting = false;
 
-    // Bulletproof CSS Injection for Torn React, TornTools, & Message Button Protection
     const badgeCSS = `
         .trpt-badge {
             font-size: 11px !important;
@@ -104,7 +103,6 @@
         return false;
     }
 
-    // Cross-tab synchronized Google Sheets sync
     function syncGlobalData(callback) {
         if (!GOOGLE_SCRIPT_URL) return;
 
@@ -127,7 +125,6 @@
                     if (Array.isArray(data)) {
                         sharedRevivesCache = data;
                         GM_setValue('trpt_shared_cache', JSON.stringify(data));
-                        console.log('[TRPT] Cache updated:', sharedRevivesCache.length, 'records.');
                         injectReputationBadges();
                         if (typeof callback === 'function') callback();
                     }
@@ -153,7 +150,6 @@
         });
     }
 
-    // Cross-tab synchronized Torn API fetch to avoid multi-tab rate limits
     function fetchPast24HourRevives() {
         if (isFetchingRevives) return;
 
@@ -238,17 +234,18 @@
         return badge;
     }
 
-    function applyBadgeToElement(targetContainer, targetId) {
-        if (!targetContainer || !targetId) return;
-
-        if (targetContainer.querySelector('a[href*="send_message"], a[href*="trade.php"], a[href*="attacks.php"]') ||
-            targetContainer.closest('.user-actions, .profile-buttons, [class*="actions"]')) {
-            return;
-        }
+    // New targeted injection handler for exact placement
+    function applyBadgeToElement(targetElement, targetId, placement = 'after') {
+        if (!targetElement || !targetId) return;
 
         const normalizedTargetId = String(targetId).trim();
         const history = sharedRevivesCache.filter(r => String(r.targetId || r.target_id || '').trim() === normalizedTargetId);
-        const existingBadge = targetContainer.querySelector('.trpt-badge');
+        
+        // Find existing badge either inside the container or right next to it
+        let existingBadge = targetElement.querySelector(':scope > .trpt-badge');
+        if (!existingBadge && targetElement.nextSibling && targetElement.nextSibling.classList && targetElement.nextSibling.classList.contains('trpt-badge')) {
+            existingBadge = targetElement.nextSibling;
+        }
 
         if (history.length > 0) {
             const isPaid = history.some(r => isRevivePaid(r));
@@ -262,12 +259,11 @@
                 }
             } else {
                 const newBadge = createBadgeElement(isPaid, normalizedTargetId);
-                const nameNode = targetContainer.querySelector('[class*="name"], .user-name, h4, .title') || targetContainer.firstChild;
                 
-                if (nameNode && nameNode.nextSibling) {
-                    targetContainer.insertBefore(newBadge, nameNode.nextSibling);
-                } else {
-                    targetContainer.appendChild(newBadge);
+                if (placement === 'append') {
+                    targetElement.appendChild(newBadge);
+                } else if (placement === 'after') {
+                    targetElement.insertAdjacentElement('afterend', newBadge);
                 }
             }
         } else if (existingBadge) {
@@ -275,50 +271,60 @@
         }
     }
 
-    // Scoped DOM injection supporting hospital tables, logs, and general user entries
     function injectReputationBadges() {
         if (isInjecting) return;
         isInjecting = true;
 
         try {
+            // Target 1: Profile Header (Image Circle 1)
             if (window.location.href.includes('profiles.php')) {
                 const currentProfileId = extractUserId(window.location.href);
-                const profileHeader = document.querySelector(`
-                    .user-information .title-container, 
-                    .profile-header .name, 
-                    .profile-container .user-name,
-                    .profile-header-wrapper [class*="name"],
-                    div[class*="user-information"] [class*="title"],
-                    .basic-information .name
-                `);
+                const profileHeader = document.querySelector('.profile-right-wrapper .name.bottom-round, .profile-wrapper .user-information .title-container, .profile-header-wrapper [class*="name"]');
                 if (currentProfileId && profileHeader) {
-                    applyBadgeToElement(profileHeader, currentProfileId);
+                    applyBadgeToElement(profileHeader, currentProfileId, 'append');
                 }
             }
 
+            // Target 2: Success Notification Banners (Image Circle 2)
+            const successMessages = document.querySelectorAll('.msg-info-wrap, .info-msg-cont, [class*="message-container"]');
+            successMessages.forEach(msg => {
+                const link = msg.querySelector('a[href*="profiles.php"], a[href*="XID="]');
+                if (link && !link.classList.contains('trpt-processed-msg')) {
+                    link.classList.add('trpt-processed-msg');
+                    const targetId = extractUserId(link.getAttribute('href'));
+                    if (targetId) applyBadgeToElement(link, targetId, 'after');
+                }
+            });
+
+            // Target 3: Mini Profile Bottom Action Bar (Image Circle 3)
             const miniProfiles = document.querySelectorAll('[class*="miniProfile"], [class*="profile-container"], [class*="userCard"], [class*="profilePopup"]');
             miniProfiles.forEach(mini => {
-                const profileLink = mini.querySelector('a[href*="profiles.php"], a[href*="XID="]');
-                if (profileLink) {
-                    const targetId = extractUserId(profileLink.getAttribute('href'));
-                    const nameContainer = mini.querySelector('[class*="name"], .user-name, h4, .title') || profileLink;
-                    if (targetId && nameContainer) applyBadgeToElement(nameContainer, targetId);
+                const viewProfileLink = Array.from(mini.querySelectorAll('a')).find(a => a.textContent.trim() === 'View profile' || (a.href && a.href.includes('profiles.php') && !a.className.includes('name')));
+                if (viewProfileLink && viewProfileLink.parentNode) {
+                    const targetWrapper = viewProfileLink.parentNode;
+                    if (!targetWrapper.classList.contains('trpt-processed-mini')) {
+                        targetWrapper.classList.add('trpt-processed-mini');
+                        const targetId = extractUserId(viewProfileLink.getAttribute('href'));
+                        if (targetId) applyBadgeToElement(targetWrapper, targetId, 'append');
+                    }
                 }
             });
 
-            // Expanded scan to include hospital lists, log items, and table rows
+            // General catch-all for logs, hospital, and lists (Fallback)
             const contentArea = document.querySelector('.content-wrapper') || document.body;
-            const profileLinks = contentArea.querySelectorAll('a[href*="profiles.php?XID="], a[href*="step=profile"], a[href*="user.php?id="]');
-            profileLinks.forEach(link => {
-                if (link.classList.contains('trpt-processed')) return;
-                link.classList.add('trpt-processed');
-
-                if (link.closest('#sidebarroot, #chatRoot') || link.querySelector('.trpt-badge')) return;
+            const generalLinks = contentArea.querySelectorAll('a[href*="profiles.php?XID="]:not(.trpt-processed-gen), a[href*="step=profile"]:not(.trpt-processed-gen), a[href*="user.php?id="]:not(.trpt-processed-gen)');
+            generalLinks.forEach(link => {
+                link.classList.add('trpt-processed-gen');
+                
+                // Skip if handled by specific targets above
+                if (link.closest('#sidebarroot, #chatRoot, .msg-info-wrap, .info-msg-cont, [class*="miniProfile"], [class*="userCard"]')) return;
+                
                 const targetId = extractUserId(link.getAttribute('href'));
                 if (targetId && link.textContent.trim().length > 0) {
-                    applyBadgeToElement(link, targetId);
+                    applyBadgeToElement(link, targetId, 'after');
                 }
             });
+
         } finally {
             isInjecting = false;
         }
