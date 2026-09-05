@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Revive Payment Tracker (Faction Shared)
 // @namespace    https://torn.com/
-// @version      3.6.9
+// @version      3.7.0
 // @description  Track revive payments globally across your faction using Google Sheets backend & auto payment matching.
 // @author       You
 // @match        https://www.torn.com/*
@@ -137,58 +137,27 @@
         return badge;
     }
 
-    function applyBadgeToElement(targetElement, targetId, placement = 'after') {
-        if (!targetElement || !targetElement.parentNode || !targetId) return;
-
-        const normalizedTargetId = String(targetId).trim();
-        let existingBadge = targetElement.parentNode.querySelector(`.trpt-badge[data-trpt-target="${normalizedTargetId}"]`);
-
-        if (!existingBadge) {
-            const newBadge = createBadgeElement(normalizedTargetId);
-            if (placement === 'append') {
-                targetElement.appendChild(newBadge);
-            } else if (placement === 'after') {
-                targetElement.parentNode.insertBefore(newBadge, targetElement.nextSibling);
-            }
-        }
-    }
-
     function injectReputationBadges() {
-        try {
-            // Target 1: Main Profile Header
-            if (window.location.href.includes('profiles.php')) {
-                const currentProfileId = extractUserId(window.location.href);
-                const headerTitle = document.querySelector('.profile-right-wrapper [class*="name"], .user-information .title-container h4');
-                if (currentProfileId && headerTitle) {
-                    applyBadgeToElement(headerTitle, currentProfileId, 'append');
-                }
+        const links = document.querySelectorAll('a[href*="profiles.php"], a[href*="XID="], a[href*="step=profile"]');
+        
+        links.forEach(link => {
+            if (link.closest('#sidebarroot, #chatRoot') || link.querySelector('.trpt-badge')) return;
+            
+            const targetId = extractUserId(link.getAttribute('href'));
+            if (!targetId || link.textContent.trim().length === 0) return;
+
+            const normalizedTargetId = String(targetId).trim();
+            const existingBadge = link.parentNode.querySelector(`.trpt-badge[data-trpt-target="${normalizedTargetId}"]`);
+
+            if (!existingBadge) {
+                const newBadge = createBadgeElement(normalizedTargetId);
+                link.insertAdjacentElement('afterend', newBadge);
             }
-
-            // Target 2: Success Messages (Logs & Notifications)
-            document.querySelectorAll('.info-msg-cont a[href*="profiles.php"], [class*="message-container"] a[href*="profiles.php"]').forEach(link => {
-                const targetId = extractUserId(link.getAttribute('href'));
-                if (targetId) applyBadgeToElement(link, targetId, 'after');
-            });
-
-            // Target 3: Mini Profiles & Popups
-            document.querySelectorAll('[class*="miniProfile"], [class*="profilePopup"], .userCard').forEach(mini => {
-                const profileLink = mini.querySelector('a[href*="profiles.php"]');
-                const actionIcons = mini.querySelector('.profile-buttons, [class*="user-info-bottom"], [class*="actions"]');
-                
-                if (profileLink && actionIcons) {
-                    const targetId = extractUserId(profileLink.getAttribute('href'));
-                    if (targetId) applyBadgeToElement(actionIcons, targetId, 'append');
-                }
-            });
-        } catch (error) {
-            console.error("[TRPT] Injection Error:", error);
-        }
+        });
     }
 
-    // Run injection on a rapid interval to beat React re-renders
-    setInterval(injectReputationBadges, 500);
+    setInterval(injectReputationBadges, 1000);
 
-    // Fetch data normally
     const localCache = GM_getValue('trpt_shared_cache');
     if (localCache) sharedRevivesCache = JSON.parse(localCache);
 
