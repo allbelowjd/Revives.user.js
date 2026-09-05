@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Revive Payment Tracker (Faction Shared)
 // @namespace    https://torn.com/
-// @version      3.6.8
+// @version      3.6.9
 // @description  Track revive payments globally across your faction using Google Sheets backend & auto payment matching.
 // @author       You
 // @match        https://www.torn.com/*
@@ -25,7 +25,6 @@
     const STORAGE_KEY_APIKEY = 'trpt_api_keys';
     let sharedRevivesCache = [];
     let isFetchingRevives = false;
-    let isInjecting = false;
 
     const badgeCSS = `
         .trpt-badge {
@@ -47,6 +46,7 @@
         }
         .trpt-badge.paid { background-color: #28a745 !important; }
         .trpt-badge.unpaid { background-color: #dc3545 !important; }
+        .trpt-badge.untracked { background-color: #6c757d !important; }
     `;
 
     if (typeof GM_addStyle !== "undefined") {
@@ -63,26 +63,6 @@
         const keys = raw.split(',').map(k => k.trim()).filter(Boolean);
         if (keys.length === 0) return '';
         return keys[Math.floor(Math.random() * keys.length)];
-    }
-
-    function promptForApiKey() {
-        const currentKeys = GM_getValue(STORAGE_KEY_APIKEY, '');
-        const newKeys = prompt('[TRPT] Enter Torn API Key(s), separated by commas if using multiple:', currentKeys);
-        if (newKeys !== null) {
-            GM_setValue(STORAGE_KEY_APIKEY, newKeys.trim());
-            alert('[TRPT] API Key(s) updated!');
-            fetchPast24HourRevives();
-        }
-    }
-
-    if (typeof GM_registerMenuCommand !== 'undefined') {
-        GM_registerMenuCommand("Set/Update Torn API Key(s)", promptForApiKey);
-    }
-
-    function ensureApiKey() {
-        let apiKey = getApiKey();
-        if (!apiKey) promptForApiKey();
-        return getApiKey();
     }
 
     function extractUserId(urlStr) {
@@ -103,103 +83,9 @@
         return false;
     }
 
-    function syncGlobalData(callback) {
-        if (!GOOGLE_SCRIPT_URL) return;
-
-        const lastSync = GM_getValue('trpt_last_gsheet_sync', 0);
-        if (Date.now() - lastSync < 25000) {
-            const localCache = GM_getValue('trpt_shared_cache');
-            if (localCache) sharedRevivesCache = JSON.parse(localCache);
-            if (typeof callback === 'function') callback();
-            return;
-        }
-        GM_setValue('trpt_last_gsheet_sync', Date.now());
-
-        GM_xmlhttpRequest({
-            method: 'GET',
-            url: GOOGLE_SCRIPT_URL,
-            anonymous: true,
-            onload: function (response) {
-                try {
-                    const data = JSON.parse(response.responseText);
-                    if (Array.isArray(data)) {
-                        sharedRevivesCache = data;
-                        GM_setValue('trpt_shared_cache', JSON.stringify(data));
-                        injectReputationBadges();
-                        if (typeof callback === 'function') callback();
-                    }
-                } catch (e) {
-                    console.error('[TRPT] Sync Error:', e);
-                }
-            }
-        });
-    }
-
-    function logReviveToSheet(reviveData, callback) {
-        if (!GOOGLE_SCRIPT_URL) return;
-        GM_xmlhttpRequest({
-            method: 'POST',
-            url: GOOGLE_SCRIPT_URL,
-            headers: { "Content-Type": "application/json" },
-            data: JSON.stringify(reviveData),
-            onload: function() {
-                setTimeout(() => {
-                    syncGlobalData(callback);
-                }, 1000);
-            }
-        });
-    }
-
-    function fetchPast24HourRevives() {
-        if (isFetchingRevives) return;
-
-        const lastFetch = GM_getValue('trpt_last_torn_fetch', 0);
-        if (Date.now() - lastFetch < 55000) return; 
-        GM_setValue('trpt_last_torn_fetch', Date.now());
-
-        const apiKey = getApiKey();
-        if (!apiKey) return;
-
-        isFetchingRevives = true;
-        const twentyFourHoursAgo = Math.floor((Date.now() - (24 * 60 * 60 * 1000)) / 1000);
-        const apiUrl = `https://api.torn.com/faction/?selections=revives&from=${twentyFourHoursAgo}&key=${apiKey}`;
-
-        GM_xmlhttpRequest({
-            method: 'GET',
-            url: apiUrl,
-            onload: function(response) {
-                isFetchingRevives = false;
-                try {
-                    const data = JSON.parse(response.responseText);
-                    if (data.error || !data.revives) return;
-
-                    Object.keys(data.revives).forEach(reviveId => {
-                        const r = data.revives[reviveId];
-                        const existing = sharedRevivesCache.find(
-                            cached => String(cached.reviveId || cached.revive_id || '').trim() === String(reviveId).trim()
-                        );
-
-                        if (!existing) {
-                            logReviveToSheet({
-                                timestamp: new Date((r.timestamp || Math.floor(Date.now() / 1000)) * 1000).toISOString(),
-                                reviveId: String(reviveId),
-                                reviverName: r.reviver_name || r.reviver_username || 'Unknown',
-                                targetId: String(r.target_id || r.target_userID || r.target_user_id || ''),
-                                targetName: r.target_name || r.target_username || 'Unknown',
-                                paid: isRevivePaid(r)
-                            });
-                        }
-                    });
-                } catch (e) {}
-            },
-            onerror: function() { isFetchingRevives = false; }
-        });
-    }
-
     function togglePaymentStatus(targetId) {
         const history = sharedRevivesCache.filter(r => String(r.targetId || r.target_id || '').trim() === String(targetId).trim());
         let latest = history[history.length - 1];
-
         let newPaidStatus = latest ? !isRevivePaid(latest) : true;
 
         if (latest) {
@@ -207,132 +93,103 @@
             injectReputationBadges();
         }
 
-        logReviveToSheet({
-            timestamp: latest?.timestamp || new Date().toISOString(),
-            reviveId: String(latest?.reviveId || `manual_${Date.now()}`),
-            reviverName: latest?.reviverName || 'You',
-            targetId: String(targetId),
-            targetName: latest?.targetName || 'Manual Entry',
-            paid: newPaidStatus
+        if (!GOOGLE_SCRIPT_URL) return;
+        GM_xmlhttpRequest({
+            method: 'POST',
+            url: GOOGLE_SCRIPT_URL,
+            headers: { "Content-Type": "application/json" },
+            data: JSON.stringify({
+                timestamp: latest?.timestamp || new Date().toISOString(),
+                reviveId: String(latest?.reviveId || `manual_${Date.now()}`),
+                reviverName: latest?.reviverName || 'You',
+                targetId: String(targetId),
+                targetName: latest?.targetName || 'Manual Entry',
+                paid: newPaidStatus
+            })
         });
     }
 
-    function createBadgeElement(isPaid, targetId) {
+    function createBadgeElement(targetId) {
+        const normalizedTargetId = String(targetId).trim();
+        const history = sharedRevivesCache.filter(r => String(r.targetId || r.target_id || '').trim() === normalizedTargetId);
+        
+        let statusClass = 'untracked';
+        let statusText = 'UNTRACKED';
+        
+        if (history.length > 0) {
+            const isPaid = history.some(r => isRevivePaid(r));
+            statusClass = isPaid ? 'paid' : 'unpaid';
+            statusText = isPaid ? 'PAID' : 'UNPAID';
+        }
+
         const badge = document.createElement('span');
-        badge.className = `trpt-badge ${isPaid ? 'paid' : 'unpaid'}`;
-        badge.dataset.trptTarget = targetId; 
-        badge.textContent = isPaid ? 'PAID' : 'UNPAID';
+        badge.className = `trpt-badge ${statusClass}`;
+        badge.dataset.trptTarget = normalizedTargetId; 
+        badge.textContent = statusText;
         badge.title = 'Click to toggle status';
 
         badge.addEventListener('click', (e) => {
             e.preventDefault();
             e.stopPropagation();
-            if (targetId) togglePaymentStatus(targetId);
+            togglePaymentStatus(normalizedTargetId);
         });
 
         return badge;
     }
 
-    // Safer, error-resistant injection function (より安全でエラーに強いインジェクション関数)
     function applyBadgeToElement(targetElement, targetId, placement = 'after') {
         if (!targetElement || !targetElement.parentNode || !targetId) return;
 
         const normalizedTargetId = String(targetId).trim();
-        const history = sharedRevivesCache.filter(r => String(r.targetId || r.target_id || '').trim() === normalizedTargetId);
-        
-        // Find existing badge using the custom dataset attribute
         let existingBadge = targetElement.parentNode.querySelector(`.trpt-badge[data-trpt-target="${normalizedTargetId}"]`);
 
-        if (history.length > 0) {
-            const isPaid = history.some(r => isRevivePaid(r));
-            const expectedClass = isPaid ? 'trpt-badge paid' : 'trpt-badge unpaid';
-            const expectedText = isPaid ? 'PAID' : 'UNPAID';
-
-            if (existingBadge) {
-                if (existingBadge.className !== expectedClass) {
-                    existingBadge.className = expectedClass;
-                    existingBadge.textContent = expectedText;
-                }
-            } else {
-                const newBadge = createBadgeElement(isPaid, normalizedTargetId);
-                
-                if (placement === 'append') {
-                    targetElement.appendChild(newBadge);
-                } else if (placement === 'after') {
-                    targetElement.parentNode.insertBefore(newBadge, targetElement.nextSibling);
-                } else if (placement === 'before') {
-                    targetElement.parentNode.insertBefore(newBadge, targetElement);
-                }
+        if (!existingBadge) {
+            const newBadge = createBadgeElement(normalizedTargetId);
+            if (placement === 'append') {
+                targetElement.appendChild(newBadge);
+            } else if (placement === 'after') {
+                targetElement.parentNode.insertBefore(newBadge, targetElement.nextSibling);
             }
-        } else if (existingBadge) {
-            existingBadge.remove();
         }
     }
 
     function injectReputationBadges() {
-        if (isInjecting) return;
-        isInjecting = true;
-
         try {
-            // Target 1: Profile Header - Next to ID (メインプロフィールのヘッダー)
+            // Target 1: Main Profile Header
             if (window.location.href.includes('profiles.php')) {
                 const currentProfileId = extractUserId(window.location.href);
-                const headerTitle = document.querySelector('.user-information .title-container, .profile-right-wrapper [class*="name"]');
+                const headerTitle = document.querySelector('.profile-right-wrapper [class*="name"], .user-information .title-container h4');
                 if (currentProfileId && headerTitle) {
                     applyBadgeToElement(headerTitle, currentProfileId, 'append');
                 }
             }
 
-            // Target 2: Success Notification Banner - Next to linked name (成功メッセージのリンクの横)
-            document.querySelectorAll('.info-msg-cont a[href*="profiles.php"], .msg-info-wrap a[href*="profiles.php"]').forEach(link => {
+            // Target 2: Success Messages (Logs & Notifications)
+            document.querySelectorAll('.info-msg-cont a[href*="profiles.php"], [class*="message-container"] a[href*="profiles.php"]').forEach(link => {
                 const targetId = extractUserId(link.getAttribute('href'));
                 if (targetId) applyBadgeToElement(link, targetId, 'after');
             });
 
-            // Target 3: Mini Profile Bottom Action Bar - Right of the icons (ミニプロフィールのアイコンの右側)
-            document.querySelectorAll('[class*="miniProfile"], .profile-container, .userCard').forEach(mini => {
-                const actionLinks = mini.querySelector('.profile-buttons, .user-info-bottom, [class*="actions"]');
+            // Target 3: Mini Profiles & Popups
+            document.querySelectorAll('[class*="miniProfile"], [class*="profilePopup"], .userCard').forEach(mini => {
                 const profileLink = mini.querySelector('a[href*="profiles.php"]');
+                const actionIcons = mini.querySelector('.profile-buttons, [class*="user-info-bottom"], [class*="actions"]');
                 
-                if (actionLinks && profileLink) {
+                if (profileLink && actionIcons) {
                     const targetId = extractUserId(profileLink.getAttribute('href'));
-                    if (targetId) applyBadgeToElement(actionLinks, targetId, 'append');
+                    if (targetId) applyBadgeToElement(actionIcons, targetId, 'append');
                 }
             });
-
-            // General Fallback for all other profile links (Hospital, Logs, etc.) (その他のリスト用のフォールバック)
-            const contentArea = document.querySelector('.content-wrapper') || document.body;
-            contentArea.querySelectorAll('a[href*="profiles.php?XID="], a[href*="step=profile"]').forEach(link => {
-                // Skip if it's already inside a known structured container handled above
-                if (link.closest('.user-information, .info-msg-cont, .msg-info-wrap, [class*="miniProfile"], .profile-container, #chatRoot')) return;
-                
-                const targetId = extractUserId(link.getAttribute('href'));
-                if (targetId && link.textContent.trim().length > 1) {
-                    applyBadgeToElement(link, targetId, 'after');
-                }
-            });
-
         } catch (error) {
-            console.error("[TRPT] Error injecting badges:", error);
-        } finally {
-            isInjecting = false;
+            console.error("[TRPT] Injection Error:", error);
         }
     }
 
-    syncGlobalData(function() {
-        ensureApiKey();
-        fetchPast24HourRevives();
-    });
+    // Run injection on a rapid interval to beat React re-renders
+    setInterval(injectReputationBadges, 500);
 
-    let debouncedTimer = null;
-    const observer = new MutationObserver(() => {
-        if (debouncedTimer) clearTimeout(debouncedTimer);
-        debouncedTimer = setTimeout(injectReputationBadges, 300);
-    });
-
-    observer.observe(document.body, { childList: true, subtree: true });
-
-    setInterval(syncGlobalData, 30000);
-    setInterval(fetchPast24HourRevives, 60000);
+    // Fetch data normally
+    const localCache = GM_getValue('trpt_shared_cache');
+    if (localCache) sharedRevivesCache = JSON.parse(localCache);
 
 })();
